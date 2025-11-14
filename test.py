@@ -26,6 +26,8 @@ from lxt.efficient.patches import patch_method, patch_attention, patch_cp_attent
 from lxt.efficient.patches import rms_norm_forward, gated_mlp_forward, cp_gated_mlp_forward, dropout_forward
 from lxt.efficient import monkey_patch, monkey_patch_zennit
 
+from zennit.composites import LayerMapComposite
+import zennit.rules as z_rules
 
 def load_qwen_model(model_id="Qwen/Qwen2.5-VL-3B-Instruct"):
 
@@ -91,7 +93,7 @@ def get_target(inputs, model):
     T = target.shape[0]
     return target, gen
 
-def configure_lxt(model):
+def configure_lxt(model, use_zennit=False):
 
     attnLRP = {
         Qwen2_5_VLMLP: partial(patch_method, gated_mlp_forward),
@@ -102,15 +104,36 @@ def configure_lxt(model):
 
     monkey_patch(modeling_qwen2_5_vl, patch_map=attnLRP, verbose=True)
 
+    zennit_comp = None
+
+    if use_zennit:
+        # Define rules for the Conv2d and Linear layers using 'zennit'
+        conv_gamma = 100
+        lin_gamma = 0.05
+        # LayerMapComposite maps specific layer types to specific LRP rule implementations
+        zennit_comp = LayerMapComposite([
+            (torch.nn.Conv3d, z_rules.Gamma(conv_gamma)),
+            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+        ])
+        
+        monkey_patch_zennit(verbose=True)
+
     # Set up the model for the explanation task
-    model.train()  # Switch to train mode to enable gradient flow
-    model.gradient_checkpointing_enable()  # Optional: saves memory
+    # model.train()  # Switch to train mode to enable  gradient flow
+    #model.gradient_checkpointing_enable()  # Optional: saves memory
 
     # Deactivate gradients on model parameters to save memory and ensure LRP rules apply
     for param in model.parameters():
         param.requires_grad = False
 
-def get_relevance(model, inputs):
+    if zennit_comp is not None:
+        # Register the composite rules with the model
+        zennit_comp.register(model)
+    return zennit_comp
+
+
+
+def get_relevance(model, inputs, zennit_comp=None):
 
     input_ids = inputs.input_ids
     attention_mask = inputs.attention_mask
@@ -119,10 +142,10 @@ def get_relevance(model, inputs):
 
     # Text embeddings
     inputs_embeds = model.get_input_embeddings()(input_ids)
-    #inputs_embeds.requires_grad_(True) # .to(model.device)
+    # inputs_embeds.requires_grad_(True) # .to(model.device)
 
     # Vision embeddings
-    #pixel_values.requires_grad_(True)
+    # pixel_values.requires_grad_(True)
     image_embeds = model.get_image_features(pixel_values,
                                             image_grid_thw=image_grid_thw)
     
@@ -132,25 +155,32 @@ def get_relevance(model, inputs):
     )
     inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 
-    # inputs_embeds = inputs_embeds.detach().requires_grad_(True)
+    inputs_embeds = inputs_embeds.detach().requires_grad_(True)
 
     # inference and get the maximum logit at the last position (we can also explain other tokens)
     outputs = model(
                     #input_ids=input_ids,
                     inputs_embeds=inputs_embeds,
                     attention_mask=attention_mask,
-                    image_grid_thw=image_grid_thw,
+                    #image_grid_thw=image_grid_thw,
                     #pixel_values=pixel_values,
                     #position_ids=position_ids,
-                    use_cache=False
+                    use_cache=True
                     )
     
     output_logits = outputs["logits"]
+    print(output_logits)
     max_logits, _ = torch.max(output_logits[0, -1, :], dim=-1)
     max_logits.backward()
+
+    if zennit_comp is not None:
+        # Remove the registered composite to prevent interference in future iterations
+        zennit_comp.remove()
+
     relevance = (inputs_embeds.grad * inputs_embeds).float().sum(-1).detach().cpu()[0] # cast to float32 before summation for higher precision
 
     return relevance
+
 
 def reshape_visual_relevance(model, processor, image_size):
 
@@ -170,7 +200,7 @@ def reshape_visual_relevance(model, processor, image_size):
     return (n_patches_x, n_patches_y)
 
 
-def visualize_image_relevance(image, img_relevance, figsize=(8,8)):
+def visualize_image_relevance(image, img_relevance, figsize=(8,8), save_path=None):
 
 
     # Convert the image to an array
@@ -198,8 +228,14 @@ def visualize_image_relevance(image, img_relevance, figsize=(8,8)):
         ax.set_axis_off()
         fig.tight_layout()
 
+        # ---- SAVE FIGURE ----
+        if save_path is None:
+            save_path = "img/relevance_img_overlay.png"
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
-def visualize_text_relevance(text, token_relevance, figsize=(8,8)):
+
+def visualize_text_relevance(text, token_relevance, figsize=(8,8), save_path=None):
 
     # "Importance": abs by default (signed scores → magnitude)
     idx_max = int(torch.argmax(token_relevance))
@@ -222,7 +258,10 @@ def visualize_text_relevance(text, token_relevance, figsize=(8,8)):
     plt.xlabel('Token importance (|relevance|)')
     plt.title('Top-k token attributions (max highlighted)')
     plt.tight_layout()
-    plt.show()
+    # ---- SAVE FIGURE ----
+    if save_path is None:
+        save_path = "img/relevance_prompt_overlay.png"
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
 
 
@@ -234,9 +273,10 @@ def main():
 
     # target, gen = get_target(inputs, model)
 
-    _ = configure_lxt(model)
+    zennit_comp = configure_lxt(model, use_zennit=False)
 
-    relevance = get_relevance(model, inputs)
+    relevance = get_relevance(model, inputs, zennit_comp=zennit_comp)
+    
     # normalize relevance between [-1, 1] for plotting
     relevance_norm = relevance / relevance.abs().max()
 
