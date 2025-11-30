@@ -5,8 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "bitsandbytes>=0.48.2",
+    "captum>=0.7.0",
     "colpali-engine>=0.3.13",
+    "datasets>=4.4.1",
+    "einops>=0.8.1",
     "ipywidgets>=8.1.8",
+    "numpy==2.3.5",
+    "seaborn>=0.13.2",
 ]
 
 [dependency-groups]
