@@ -185,212 +185,89 @@ def compile_latex_to_jpg(latex_code, path='word_colors.pdf', delete_aux_files=Tr
     return img
 
 
-# def vis_text(words, relevances, candidates, candi_scores, vis_token_idx, path='heatmap.jpg', font=r'{18pt}{21pt}'):
-#     """
-#     Visualizes text tokens and their relevance scores as a heatmap image using LaTeX.
-
-#     This function processes a list of words and their corresponding relevance scores, along with candidate tokens 
-#     and their scores, to create a color-coded heatmap visualization. It handles special LaTeX characters by escaping 
-#     them appropriately to ensure correct LaTeX rendering. The visualization includes the explained tokens, subsequent 
-#     tokens, and top prediction candidates with distinct coloring based on their scores.
-
-#     Args:
-#         words: All tokens need to visualize.
-#         relevances: Relevance scores corresponding to each token.
-#         candidates: Candidate tokens (top k predictions).
-#         candi_scores: Scores associated with each candidate token.
-#         vis_token_idx (int): Index of the token to vis (explain).
-#         path (str, optional): File path to save the generated heatmap image. Defaults to 'heatmap.jpg'.
-#         font (str, optional): LaTeX font size settings for the visualization. Defaults to r'{18pt}{21pt}'.
-
-#     Returns:
-#         str: Numpy image for the visualized texts
-#     """
-
-
-#     # add scores (-2, gray) for next tokens after the exaplained one
-#     add_scores = []
-#     for i in range(len(relevances), len(words[:-1])):
-#         add_scores.append(-2)
-
-#     # explained tokens + next tokens + top pred candidates (see defination of scores in generate_latex)
-#     all_scores = relevances.tolist() + add_scores + [-3] + candi_scores.cpu().float().tolist()
-#     all_scores[vis_token_idx] = -1
-
-#     # scores correspond to the words
-#     all_words = words[:-1] + [''] + ['$ ' + _ + '$' for _ in candidates]
-
-#     # replace special texts to fit latex
-#     all_words = [_.replace('\\', '\\backslash').replace('\n', '\\newline').replace('_', '\\_').replace('^', '\\^').replace('&', '\\&').replace('%', '\\%').replace('Ċ', '\\newline') for _ in all_words]
-
-#     # to latex, then to img
-#     latex_code = generate_latex(all_words, all_scores, cmap='bwr', font=font)
-#     return compile_latex_to_jpg(latex_code, path=path, delete_aux_files=True)
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
-import matplotlib.cm as cm
-
-def vis_text(
-    words,
-    relevances,
-    candidates,
-    candi_scores,
-    vis_token_idx,
-    path="heatmap.jpg",
-    font_size=18,
-    max_chars_per_line=60,
-    dpi=200,
-):
+def vis_text(words, relevances, candidates, candi_scores, vis_token_idx, path='heatmap.jpg', font=r'{18pt}{21pt}'):
     """
-    Visualizes text tokens and their relevance scores as an image using matplotlib
-    (no LaTeX / xelatex required).
+    Visualizes text tokens and their relevance scores as a heatmap image using LaTeX.
+
+    This function processes a list of words and their corresponding relevance scores, along with candidate tokens 
+    and their scores, to create a color-coded heatmap visualization. It handles special LaTeX characters by escaping 
+    them appropriately to ensure correct LaTeX rendering. The visualization includes the explained tokens, subsequent 
+    tokens, and top prediction candidates with distinct coloring based on their scores.
 
     Args:
-        words: list[str], all tokens to visualize (same as before).
-        relevances: Tensor/ndarray/list of floats, relevance scores for tokens.
-        candidates: list[str], candidate tokens (top-k predictions).
-        candi_scores: Tensor/ndarray/list of floats, scores for candidates.
-        vis_token_idx (int): index of the token to explain.
-        path (str): output image path.
-        font_size (int): matplotlib font size.
-        max_chars_per_line (int): simple heuristic for line breaking.
-        dpi (int): output DPI.
+        words: All tokens need to visualize.
+        relevances: Relevance scores corresponding to each token.
+        candidates: Candidate tokens (top k predictions).
+        candi_scores: Scores associated with each candidate token.
+        vis_token_idx (int): Index of the token to vis (explain).
+        path (str, optional): File path to save the generated heatmap image. Defaults to 'heatmap.jpg'.
+        font (str, optional): LaTeX font size settings for the visualization. Defaults to r'{18pt}{21pt}'.
 
     Returns:
-        np.ndarray: RGB image array (H, W, 3), uint8.
+        str: Numpy image for the visualized texts
     """
 
-    # --------- helper to be robust to torch / numpy / list ----------
-    def to_list(x):
-        try:
-            import torch
-            if isinstance(x, torch.Tensor):
-                return x.detach().cpu().float().tolist()
-        except ImportError:
-            pass
 
-        if isinstance(x, np.ndarray):
-            return x.astype(float).tolist()
-        return [float(v) for v in x]
-
-    relevances = to_list(relevances)
-    candi_scores = to_list(candi_scores)
-
-    # --------- reproduce your score construction ----------
-    # add scores (-2, gray) for next tokens after the explained one
+    # add scores (-2, gray) for next tokens after the exaplained one
     add_scores = []
-    for _ in range(len(relevances), len(words[:-1])):
+    for i in range(len(relevances), len(words[:-1])):
         add_scores.append(-2)
 
-    # explained tokens + next tokens + top pred candidates
-    all_scores = relevances + add_scores + [-3] + candi_scores
-    all_scores[vis_token_idx] = -1  # mark explained token
+    # explained tokens + next tokens + top pred candidates (see defination of scores in generate_latex)
+    all_scores = relevances.tolist() + add_scores + [-3] + candi_scores.cpu().float().tolist()
+    all_scores[vis_token_idx] = -1
 
     # scores correspond to the words
-    all_words = words[:-1] + [""] + [f"$ {w} $" for w in candidates]
+    all_words = words[:-1] + [''] + ['$ ' + _ + '$' for _ in candidates]
 
-    # --------- score -> color mapping ----------
-    # real scores are everything except {-1, -2, -3}
-    real_scores = [s for s in all_scores if s not in (-1, -2, -3)]
-    if len(real_scores) == 0:
-        real_scores = [0.0]  # avoid degenerate norm
+    # replace special texts to fit latex
+    all_words = [_.replace('\\', '\\backslash').replace('\n', '\\newline').replace('_', '\\_').replace('^', '\\^').replace('&', '\\&').replace('%', '\\%').replace('Ċ', '\\newline') for _ in all_words]
 
-    vmin, vmax = min(real_scores), max(real_scores)
-    if vmin == vmax:
-        # avoid zero range
-        vmin -= 1.0
-        vmax += 1.0
+    # to latex, then to img
+    latex_code = generate_latex(all_words, all_scores, cmap='bwr', font=font)
+    return compile_latex_to_jpg(latex_code, path=path, delete_aux_files=True)
 
-    cmap = plt.get_cmap("bwr")
-    norm = Normalize(vmin=vmin, vmax=vmax)
 
-    def score_to_color(score):
-        # special codes mimic your conventions
-        if score == -1:  # explained token
-            return (1.0, 1.0, 0.2, 1.0)  # bright yellow
-        if score == -2:  # next tokens
-            return (0.85, 0.85, 0.85, 1.0)  # light gray
-        if score == -3:  # separator before candidates
-            return (1.0, 1.0, 1.0, 1.0)  # white
-        # normal relevance score
-        return cmap(norm(score))
 
-    # --------- layout: simple line wrapping ----------
-    # We'll assume ~monospaced metric and wrap based on char count.
-    lines = [[]]  # each line is a list of (word, score)
-    current_len = 0
-    for w, s in zip(all_words, all_scores):
-        extra = len(w) + 1  # +1 for space
-        if current_len + extra > max_chars_per_line and lines[-1]:
-            lines.append([])
-            current_len = 0
-        lines[-1].append((w, s))
-        current_len += extra
+def id2idx(inp_id, target_id, return_last=False):
+    """
+    Convert a target ID or sequence of IDs to the corresponding index in the input list.
 
-    # --------- figure size heuristic ----------
-    n_lines = len(lines)
-    # width: proportional to max_chars_per_line
-    fig_width = max(6.0, max_chars_per_line / 10.0)
-    # height: proportional to number of lines
-    fig_height = max(1.5, n_lines * (font_size / 18.0) * 0.6)
+    Args:
+        input_ids (list of int): The list of token IDs to search within.
+        target_id (int or list of int): The target token ID or sequence of token IDs to find.
+        return_last (bool): If True and target_id is a list, return the index of the last token in the matched sequence.
+                            Otherwise, return the index of the first token.
 
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=dpi)
-    ax.axis("off")
+    Returns:
+        int: The index of the target ID (or start/end of the sequence) in input_ids, or -1 if not found.
+    """
 
-    y = 1.0  # top (in axis coordinates)
-    line_height = 1.0 / (n_lines + 0.5)
+    # use a array of tokens as the identifier
+    if isinstance(target_id, list):
+        n = len(target_id)
+        indexes = [i for i in range(len(inp_id) - n + 1) if inp_id[i:i+n] == target_id]
+        if len(indexes) > 0:
+            # get the idx of the first token as the end identifier
+            idx = indexes[-1]
 
-    for line in lines:
-        x = 0.01
-        # rough char->axis scaling
-        # assume each char is ~1/max_chars_per_line of width
-        char_width = 0.98 / max_chars_per_line
+            # get the idx of the last token as the begain identifier
+            if return_last:
+                idx += len(target_id) - 1
+        else:
+            idx = -1
 
-        for word, score in line:
-            if word == "":
-                # this is the separator between main text and candidates
-                word_to_draw = " "  # keep a gap
-            else:
-                word_to_draw = word
-
-            # background color from score
-            bgcolor = score_to_color(score)
-
-            ax.text(
-                x,
-                y,
-                word_to_draw + " ",
-                fontsize=font_size,
-                transform=ax.transAxes,
-                va="top",
-                ha="left",
-                bbox=dict(
-                    facecolor=bgcolor,
-                    edgecolor="none",
-                    boxstyle="round,pad=0.1",
-                ),
-            )
-
-            # rough advance: length of the word in chars
-            x += (len(word_to_draw) + 1) * char_width
-
-        y -= line_height
-
-    fig.tight_layout(pad=0.2)
-    fig.savefig(path, bbox_inches="tight")
-    # convert to numpy image
-    fig.canvas.draw()
-    img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    plt.close(fig)
-    return img
+    # if the id is unique, use a int is simple
+    else:
+        try:
+            idx = inp_id.index(target_id)
+        except:
+            idx = -1
+    return idx
 
 
 def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, candidates, candi_scores, \
-                       vis_token_idx, img_save_fn, eval_only=False, vis_width=-1):
+                       vis_token_idx, img_save_fn, eval_only=False, vis_width=-1,):
     """
     Process multimodal tokens: visualizing combined image and text activations with normalizing, filtering, and blending scores.
 
@@ -462,11 +339,12 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
 
         # eval only output
         if eval_only:
-            return None, img_map
+            return None, img_map, txt_scores
 
         out_img = [img_map[i] * 0.5 + resized_img[i] * 0.5 for i in range(len(vision_shape))]
         out_img = np.concatenate(out_img, 1)
 
+        txt_map = None
         # text vis via latex
         try:
             #txt_map = vis_text(txts, txt_scores, candidates, candi_scores, vis_token_idx, path=img_save_fn, font=r'{5pt}{6pt}')
@@ -475,17 +353,19 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
 
         except:
             print('Skip text visualization, please check the installation of texlive-xetex.')
-            return out_img, img_map
+            # return out_img, img_map
         
         if not isinstance(txt_map, np.ndarray):
             print('Skip txt visualization, please check weather the text special character compatible with LaTeX.')
-            return out_img, img_map
+            pass
+            # return out_img, img_map
 
-        # concat multimodal vis
-        txt_map = cv2.resize(txt_map, (out_img.shape[1], int(float(txt_map.shape[0]) / float(txt_map.shape[1]) * out_img.shape[1])))
-        out_img = np.concatenate([out_img, txt_map], 0)
+        else:
+            # concat multimodal vis
+            txt_map = cv2.resize(txt_map, (out_img.shape[1], int(float(txt_map.shape[0]) / float(txt_map.shape[1]) * out_img.shape[1])))
+            out_img = np.concatenate([out_img, txt_map], 0)
 
-        return out_img, img_map
+        return out_img, img_map, txt_scores
 
     # single img
     elif len(vision_shape) == 2:
@@ -501,7 +381,7 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
         img_scores = (img_scores * 255).astype('uint8')
 
         if eval_only:
-            return None, img_scores
+            return None, img_scores, txt_scores
 
         img_map = cv2.applyColorMap(img_scores, cv2.COLORMAP_JET)
         img_map = cv2.resize(img_map, (w, h))
@@ -509,21 +389,24 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
             raw_img = cv2.resize(raw_img, (w, h))
         out_img = img_map * 0.5 + raw_img * 0.5
 
+        txt_map = None
         # vis text via latex
         try:
             txt_map = vis_text(txts, txt_scores, candidates, candi_scores, vis_token_idx, path=img_save_fn)
         except:
             print('Skip text visualization, please check the installation of texlive-xetex.')
-            return out_img, img_scores
+            # return out_img, img_scores, txt_scores
 
         if not isinstance(txt_map, np.ndarray):
             print('Skip txt visualization, please check weather the text special character compatible with LaTeX.')
-            return out_img, img_scores
+            pass
+            # return out_img, img_scores, txt_scores
+        else:
+            txt_map = cv2.resize(txt_map, (w, int(float(txt_map.shape[0]) / float(txt_map.shape[1]) * w)))
+            out_img = np.concatenate([out_img, txt_map], 0)
 
-        txt_map = cv2.resize(txt_map, (w, int(float(txt_map.shape[0]) / float(txt_map.shape[1]) * w)))
-        out_img = np.concatenate([out_img, txt_map], 0)
+        return out_img, img_scores, txt_scores
 
-        return out_img, img_scores
 
     # video
     else:
@@ -537,7 +420,7 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
         img_scores = (img_scores * 255).astype('uint8')
 
         if eval_only:
-            return None, img_scores
+            return None, img_scores, txt_scores
 
         img_map = [cv2.resize(cv2.applyColorMap(_, cv2.COLORMAP_JET), (w, h)) for _ in img_scores]
         if vis_width > 0:
@@ -546,63 +429,28 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
         out_img = np.concatenate(out_img, 1)
 
         # vis text via latex
+        txt_map = None
         try:
             txt_map = vis_text(txts, txt_scores, candidates, candi_scores, vis_token_idx, path=img_save_fn, font=r'{5pt}{6pt}')
         except:
             print('Skip text visualization, please check the installation of texlive-xetex.')
-            return out_img, img_scores
+            # return out_img, img_scores
 
         if not isinstance(txt_map, np.ndarray):
             print('Skip txt visualization, please check weather the text special character compatible with LaTeX.')
-            return out_img, img_scores
-
-        txt_map = cv2.resize(txt_map, (int(w * b), int(float(txt_map.shape[0]) / float(txt_map.shape[1]) * w * b)))
-        out_img = np.concatenate([out_img, txt_map], 0)
-
-        return out_img, img_scores
-
-
-
-def id2idx(inp_id, target_id, return_last=False):
-    """
-    Convert a target ID or sequence of IDs to the corresponding index in the input list.
-
-    Args:
-        input_ids (list of int): The list of token IDs to search within.
-        target_id (int or list of int): The target token ID or sequence of token IDs to find.
-        return_last (bool): If True and target_id is a list, return the index of the last token in the matched sequence.
-                            Otherwise, return the index of the first token.
-
-    Returns:
-        int: The index of the target ID (or start/end of the sequence) in input_ids, or -1 if not found.
-    """
-
-    # use a array of tokens as the identifier
-    if isinstance(target_id, list):
-        n = len(target_id)
-        indexes = [i for i in range(len(inp_id) - n + 1) if inp_id[i:i+n] == target_id]
-        if len(indexes) > 0:
-            # get the idx of the first token as the end identifier
-            idx = indexes[-1]
-
-            # get the idx of the last token as the begain identifier
-            if return_last:
-                idx += len(target_id) - 1
+            pass
+            #return out_img, img_scores
         else:
-            idx = -1
+            txt_map = cv2.resize(txt_map, (int(w * b), int(float(txt_map.shape[0]) / float(txt_map.shape[1]) * w * b)))
+            out_img = np.concatenate([out_img, txt_map], 0)
 
-    # if the id is unique, use a int is simple
-    else:
-        try:
-            idx = inp_id.index(target_id)
-        except:
-            idx = -1
-    return idx
+        return out_img, img_scores, txt_scores
 
 
 
 def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
-        processor, save_fn, target_token, img_scores_list, eval_only=False):
+        processor, save_fn, target_token, img_scores_list, eval_only=False,
+        return_components=True):
 
     """
     Generate a Token Activation Map (TAM) with optional Estimated Causal Inference (ECI) 
@@ -665,10 +513,11 @@ def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
     answer_idx = [id2idx(tokens, answer_id[0], True), id2idx(tokens, answer_id[1])]
 
     # decode ids
-
-    prompt = processor.tokenizer.tokenize(processor.batch_decode([tokens[prompt_idx[0] + 1: prompt_idx[1]]], \
+    prompt_tokens = [tokens[prompt_idx[0] + 1: prompt_idx[1]]]
+    answer_tokens = [tokens[answer_idx[0] + 1:]]
+    prompt = processor.tokenizer.tokenize(processor.batch_decode(prompt_tokens, \
             skip_special_tokens=False, clean_up_tokenization_spaces=False)[0])
-    answer = processor.tokenizer.tokenize(processor.batch_decode([tokens[answer_idx[0] + 1:]], \
+    answer = processor.tokenizer.tokenize(processor.batch_decode(answer_tokens, \
             skip_special_tokens=False, clean_up_tokenization_spaces=False)[0])
     txt_all = prompt + answer
 
@@ -720,16 +569,22 @@ def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
     # generated tokens (round >= 1)
     else:
         cls_id = tokens[answer_idx[0] + round_idx + 1]
-
+    
     # class activation map from logits of the target token class
     scores = torch.cat([logit_list[_][0, :, cls_id] for _ in range(round_idx + 1)], -1).clip(min=0)
-
+    # print(scores.shape)
     # get relevance scores
     scores = scores.detach().cpu().float().numpy()
     prompt_scores = scores[prompt_idx[0] + 1: prompt_idx[1]]
     last_prompt = scores[logit_list[0].shape[1] - 1: logit_list[0].shape[1]]
     answer_scores = scores[answer_idx[0] + 1:]
     txt_scores = np.concatenate([prompt_scores, last_prompt, answer_scores], -1)
+
+    txt_scores_raw = scores.copy()          # raw logit-based scores for all text positions
+    prompt_scores_raw = prompt_scores.copy()
+    answer_scores_raw = answer_scores.copy()
+
+
     if isinstance(img_idx, list):
         img_scores = scores[img_idx[0] + 1: img_idx[1]]
     else:
@@ -771,13 +626,34 @@ def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
     candi_scores, candi_ids = logit_list[round_idx][0, this_token_idx].topk(3)
     candi_scores = candi_scores.softmax(0)
     candidates = processor.batch_decode([[_] for _ in candi_ids])
-    
+
+    img_scores_raw = img_scores.copy()
     # apply the multimodal_process to obtain TAM
-    vis_img, img_map = multimodal_process(cv_img, vision_shape, img_scores, txt_scores, txt_all, candidates, candi_scores, vis_token_idx, \
-            save_fn, eval_only=eval_only, vis_width=-1 if eval_only else 500)
+    vis_img, img_map_norm, txt_scores_norm = multimodal_process(cv_img, vision_shape,
+                                                           img_scores, txt_scores,
+                                                            txt_all, candidates,
+                                                            candi_scores, vis_token_idx, \
+                                                            save_fn, eval_only=eval_only,
+                                                            vis_width=-1 if eval_only else 500)
+    
+    ### Block add to retrieve the both relevance
+    if return_components:
+        return {
+        "raw_img":          cv_img,
+        "vis_img":          vis_img,           # None if eval_only and no save_fn
+        "img_map_norm":     img_map_norm,      # post-RGF map, [0,255]
+        "img_scores_raw":   img_scores_raw,    # pre-norm, post-ECI
+        "txt_scores_raw":   txt_scores_raw,    # full raw scores for all text positions
+        "txt_scores_norm":  txt_scores_norm,   # full normalized scores (prompt+answer)
+        "prompt_tokens":    prompt_tokens,            # decoed prompt tokens
+        "answer_tokens":    answer_tokens,            # decoded answer tokens
+        "prompt_scores_raw": prompt_scores_raw,
+        "answer_scores_raw": answer_scores_raw,
+    }
     
     if save_fn != '' and vis_token_idx < (len(txt_all) - 1) and isinstance(vis_img, np.ndarray):
         os.makedirs(os.path.dirname(save_fn), exist_ok=True)
         cv2.imwrite(save_fn, vis_img)
     
-    return img_map
+    return img_map_norm
+
