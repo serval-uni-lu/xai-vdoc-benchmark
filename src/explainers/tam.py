@@ -657,3 +657,141 @@ def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
     
     return img_map_norm
 
+
+def get_attributions(tokens,
+                    vision_shape,
+                    logit_list,
+                    special_ids, vision_input,
+                    processor,
+                    target_token_idx,
+                    img_scores_list,
+                    eval_only=True):
+
+
+    # start and end id for img, prompt and answer
+    img_id = special_ids['img_id']
+    prompt_id = special_ids['prompt_id'] # prompt text, start and end id
+    answer_id = special_ids['answer_id'] # number of tokens between prompt and answer
+    
+    # if img_id is a int, take all tokens same to this id
+    if len(img_id) == 1:
+        img_idx = (np.array(tokens) == img_id[0]).nonzero()[0]
+    else:
+        img_idx = [id2idx(tokens, img_id[0], True), id2idx(tokens, img_id[1])]
+
+    # convert vocab id to idx in tokens
+    prompt_idx = [id2idx(tokens, prompt_id[0], True), id2idx(tokens, prompt_id[1])]
+    answer_idx = [id2idx(tokens, answer_id[0], True), id2idx(tokens, answer_id[1])]
+
+    # decode ids
+    prompt_tokens = tokens[prompt_idx[0] + 1: prompt_idx[1]]
+    answer_tokens = tokens[answer_idx[0] + 1:]
+
+    prompt = processor.tokenizer.tokenize(processor.batch_decode([prompt_tokens], \
+            skip_special_tokens=False, clean_up_tokenization_spaces=False)[0])
+    answer = processor.tokenizer.tokenize(processor.batch_decode([answer_tokens], \
+            skip_special_tokens=False, clean_up_tokenization_spaces=False)[0])
+    txt_all = prompt + answer
+
+
+    # round_idx indicates the round of generation, this_token_idx is for the exaplained target token
+    round_idx = -1
+    this_token_idx = 0
+
+    # for non-first rounds
+    if isinstance(target_token_idx, int):
+        round_idx = target_token_idx
+        this_token_idx = -1 # last token of each answer round
+        vis_token_idx = len(prompt) + target_token_idx
+
+    # for the first round, which contrains multiple prompt tokens to explain
+    else:
+        round_idx, prompt_token_idx = target_token_idx
+        this_token_idx = prompt_idx[0] + prompt_token_idx + 1
+        vis_token_idx = prompt_token_idx
+
+
+    
+    # class activation map from logits of the target token class
+    target_token = answer_tokens[target_token_idx]
+    scores = torch.cat([logit_list[_][0, :, target_token] for _ in range(round_idx + 1)], -1).clip(min=0)
+
+    # get relevance scores
+    scores = scores.detach().cpu().float().numpy()
+    prompt_scores = scores[prompt_idx[0] + 1: prompt_idx[1]]
+    last_prompt = scores[logit_list[0].shape[1] - 1: logit_list[0].shape[1]]
+    answer_scores = scores[answer_idx[0] + 1:]
+    txt_scores = np.concatenate([prompt_scores, last_prompt, answer_scores], -1)
+
+    txt_scores_raw = scores.copy()          # raw logit-based scores for all text positions
+    prompt_scores_raw = prompt_scores.copy()
+    answer_scores_raw = answer_scores.copy()
+
+
+    if isinstance(img_idx, list):
+        img_scores = scores[img_idx[0] + 1: img_idx[1]]
+    else:
+        img_scores = scores[img_idx]
+
+    # save img_scores for next Estimated Causal Inference
+    img_scores_list.append(img_scores)
+
+    # exclude the same words in ECI
+    if len(img_scores_list) > 1 and vis_token_idx < len(txt_all):
+        non_repeat_idx = []
+        for i in range(vis_token_idx):
+            if i < len(txt_all) and txt_all[i] != txt_all[vis_token_idx]:
+                non_repeat_idx.append(i)
+        txt_scores_ = txt_scores[non_repeat_idx]
+        img_scores_list_ = [img_scores_list[_] for _ in non_repeat_idx]
+
+        # get the interference map of ECI
+        w = txt_scores_
+        w = w / (w.sum() + 1e-8)
+        interf_img_scores = (np.stack(img_scores_list_, 0) * w.reshape(-1, 1)).sum(0)
+
+        # apply ECI with the least squares method and relu
+        scaled_map = least_squares(img_scores, interf_img_scores)
+        img_scores = (img_scores - interf_img_scores * scaled_map).clip(min=0)
+
+    # prepare raw vision input
+    if isinstance(vision_shape[0], tuple):
+        cv_img = [cv2.cvtColor(np.array(_), cv2.COLOR_RGB2BGR) for _ in vision_input]
+    elif len(vision_shape) == 2:
+        cv_img = np.array(vision_input)
+        if len(cv_img.shape) == 4 and cv_img.shape[0] == 1:
+            cv_img = cv_img[0]
+        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
+    else: #video
+        cv_img = [cv2.cvtColor(np.array(_), cv2.COLOR_RGB2BGR) for _ in vision_input[0]]
+
+    # prepare top candidates
+    candi_scores, candi_ids = logit_list[round_idx][0, this_token_idx].topk(3)
+    candi_scores = candi_scores.softmax(0)
+    candidates = processor.batch_decode([[_] for _ in candi_ids])
+
+    img_scores_raw = img_scores.copy()
+    # apply the multimodal_process to obtain TAM
+    vis_img, img_map_norm, txt_scores_norm = multimodal_process(cv_img, vision_shape,
+                                                           img_scores, txt_scores,
+                                                            txt_all, candidates,
+                                                            candi_scores, vis_token_idx, \
+                                                            img_save_fn="",
+                                                            eval_only=eval_only,
+                                                            vis_width=-1 if eval_only else 500)
+    
+    ### Block add to retrieve the both relevance
+    return {
+    "raw_img":          cv_img,
+    "vis_img":          vis_img,           # None if eval_only and no save_fn
+    "img_map_norm":     img_map_norm,      # post-RGF map, [0,255]
+    "img_scores_raw":   img_scores_raw,    # pre-norm, post-ECI
+    "txt_scores_raw":   txt_scores_raw,    # full raw scores for all text positions
+    "txt_scores_norm":  txt_scores_norm,   # full normalized scores (prompt+answer)
+    "prompt_tokens":    prompt_tokens,            # decoed prompt tokens
+    "answer_tokens":    answer_tokens,            # decoded answer tokens
+    "prompt_scores_raw": prompt_scores_raw,
+    "answer_scores_raw": answer_scores_raw,
+}
+
+

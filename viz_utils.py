@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from PIL import Image
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+import cv2
 
 from captum.attr import visualization
 
@@ -24,7 +26,7 @@ def normalize_similarity_map(similarity_map: torch.Tensor,
     denom = (vmax - vmin).clamp(min=eps)
     return (similarity_map - vmin) / denom
 
-def prepare_for_visualization(original_image, pixel_attr, image_grid_thw,
+def prepare_for_visualization_(original_image, pixel_attr, image_grid_thw,
                               patch_size=14, figsize=(12, 4)):
         grid_t, grid_h, grid_w = image_grid_thw.tolist()  # e.g. [1, H_patches, W_patches]
 
@@ -71,6 +73,48 @@ def prepare_for_visualization(original_image, pixel_attr, image_grid_thw,
             show_colorbar=True,
             titles=["Original", "Attribution", "Overlay"],
             fig_size=figsize
+        )
+
+
+def prepare_for_visualization(original_image, pixel_attr, image_grid_thw, cmap=None):
+        
+        grid_t, grid_h, grid_w = image_grid_thw.tolist()  # e.g. [1, H_patches, W_patches]
+
+        pixel_attr = pixel_attr.view(grid_t, grid_h, grid_w, -1)[0]
+        pixel_attr = pixel_attr.mean(axis=-1)
+
+        # --- normalize to [-1, 1] ---
+        pixel_attr = pixel_attr / pixel_attr.abs().max()
+
+        heat_2d_np = pixel_attr.to(torch.float32).cpu().numpy()
+        # --- 3. to uint8 and PIL image (grayscale) ---
+        # heat_2d_np = (heat_2d_np * 255).astype("uint8")
+
+        img_resized_np = np.asarray(original_image).astype(np.float32) / 255.0  # [H, W, 3]
+        h, w, c = img_resized_np.shape
+        heat_up = cv2.resize(heat_2d_np, (w, h))
+
+        # -- Use Captum's visualize_image_attr_multiple ---
+        if cmap is None:
+            cmap = LinearSegmentedColormap.from_list(
+                'red_blue',
+                [
+                    (0.0, '#0000ff'),  # blue   (low values)
+                    (0.5, '#ffffff'),  # white  (mid)
+                    (1.0, '#ff0000'),  # red    (high values)
+                ],
+                N=256,
+            )
+
+
+        visualization.visualize_image_attr_multiple(
+            np.expand_dims(heat_up, 2),
+            img_resized_np,
+            methods=["original_image", "heat_map", "blended_heat_map"],
+            signs=["all", "all", "all"],
+            show_colorbar=True,
+            titles=["Original", "Attribution", "Overlay"],
+            cmap=cmap
         )
 
 
