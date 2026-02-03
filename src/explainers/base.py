@@ -42,7 +42,7 @@ class BaseExplainer(ABC):
                              image,
                              question: str,
                              target_indices: List[int],
-                             **kwargs) -> Tuple[torch.Tensor]:
+                             **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Implement the specific XAI logic here (e.g., call Captum).
         Must return a tensor of shape (Batch, Seq_Len, Hidden_Dim) 

@@ -1,13 +1,10 @@
 from typing import Literal, Tuple, List
 
-import numpy as np
-import cv2
 from PIL import Image
 import torch
 from captum.attr import (
-    IntegratedGradients, InputXGradient, Saliency,
+    IntegratedGradients, InputXGradient,
     TokenReferenceBase,
-    visualization
 )
 
 from src.explainers import BaseExplainer
@@ -37,18 +34,18 @@ class CaptumExplainer(BaseExplainer):
                              question,
                              target_indices: List[int],
                              **kwargs,
-                            ) -> Tuple[torch.Tensor]:
+                            ) -> Tuple[torch.Tensor, torch.Tensor]:
         inputs = self.wrapper.get_inputs(image, question)
 
-        input_ids = inputs.input_ids
-        attention_mask = inputs.attention_mask
-        pixel_values = inputs.pixel_values
-        return_probs = True
+        input_ids = inputs["input_ids"]
+        pixel_values = inputs["pixel_values"]  #.unsqueeze(0)
 
         text_embeds = self.wrapper.embed_text(input_ids)
 
         captum_forward = (text_embeds.requires_grad_(), pixel_values.requires_grad_())
-        captum_add_forward = (attention_mask, input_ids, return_probs, kwargs)
+        kwargs_dict = {k: v for k, v in inputs.items() if k not in ['pixel_values']}
+        # captum_add_forward = (attention_mask, input_ids, return_probs, kwargs)
+        captum_add_forward = (kwargs_dict)
 
         baselines = None
         use_baselines = False
@@ -60,13 +57,12 @@ class CaptumExplainer(BaseExplainer):
             # generate reference for each sample
             reference_ids = token_reference.generate_reference(
                                     input_ids.shape[-1],
-                                    device=self.device).unsqueeze(0)
+                                    device=self.device
+                                    ).unsqueeze(0)
             reference_embeds = self.wrapper.embed_text(reference_ids)
-            baselines = (reference_embeds, pixel_values * 0.0)
+            baselines = (reference_embeds, torch.zeros_like(pixel_values))
         
-        pred_result = self.wrapper.predict(input_ids=input_ids,
-                                           pixel_values=pixel_values,
-                                           attention_mask=attention_mask,
+        pred_result = self.wrapper.predict(inputs=inputs,
                                            return_logits=False,
                                            **kwargs,
                                            )
@@ -75,31 +71,20 @@ class CaptumExplainer(BaseExplainer):
 
         # Get attributions
         if use_baselines:
-            attributions = self.explainer.attribute(inputs=captum_forward,
-                                                baselines=baselines,
-                                                target=target_token,
-                                                additional_forward_args=captum_add_forward,
-                                                n_steps=10)
+            token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
+                                                            baselines=baselines,
+                                                            target=target_token,
+                                                            additional_forward_args=captum_add_forward,
+                                                            n_steps=5,
+                                                            internal_batch_size=1,
+                                                            )
         else:
-            attributions = self.explainer.attribute(inputs=captum_forward,
+            token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
                                                 target=target_token,
                                                 additional_forward_args=captum_add_forward,
                                                 )
+        
+        token_attr = token_attr.detach().cpu()
+        pixel_attr = pixel_attr.detach().cpu()
 
-        # if isinstance(target_tokens, list):
-        #     # Average over all attributions
-
-        #     for idx, target_token in enumerate(target_tokens):     
-        #         # Get attributions
-        #         if use_baselines:
-        #             attr_token_i = self.explainer.attribute(inputs=captum_forward,
-        #                                                 baselines=baselines,
-        #                                                 target=target_token,
-        #                                                 additional_forward_args=captum_add_forward,
-        #                                                 n_steps=10)
-        #         else:
-        #             attr_token_i = self.explainer.attribute(inputs=captum_forward,
-        #                                                 target=target_token,
-        #                                                 additional_forward_args=captum_add_forward,
-        #                                                 )
-        return attributions
+        return token_attr, pixel_attr

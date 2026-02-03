@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from typing import (Any, Dict, List, Optional, Tuple, Union,
                     Literal, TypeVar, Generic, Union, cast,
                     overload)
+from types import ModuleType
+
 
 import torch
 import torch.nn as nn
@@ -89,6 +91,14 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
     def get_inputs(self, image, question) -> Dict[str, Any]:
         pass
 
+    @abstractmethod
+    def get_root_module(self) -> ModuleType:
+        pass
+
+    @abstractmethod
+    def get_patch_map(self) -> Dict[str, Any]:
+        pass
+
     def forward(self, 
                 input_ids: Optional[torch.Tensor] = None,
                 pixel_values: Optional[torch.Tensor] = None,
@@ -152,7 +162,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         
         return target_logits
 
-    def get_captum_forward(self,
+    def _get_captum_forward(self,
                            text_embeds: torch.Tensor,
                            pixel_values: torch.Tensor,
                            attention_mask: torch.Tensor,
@@ -168,7 +178,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
             raise ValueError("Need pixel_values tensor")
         
         if input_ids is not None:
-            text_embeds = self.embed_text(input_ids)
+            # text_embeds = self.embed_text(input_ids)
             inputs_embeds = self.merge_embeddings(text_embeds,
                                                   image_embeds,
                                                   input_ids
@@ -180,7 +190,36 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
                             attention_mask=attention_mask,
                             return_probs=return_probs,
                             **kwargs
-                            )     
+                            )
+    
+    def get_captum_forward(self, 
+                       text_embeds, 
+                       pixel_values, 
+                       kwargs_dict): # <--- This catches attention_mask, image_grid_thw, etc.
+        
+        # We capture 'kwargs' here. 
+        # Python closures automatically allow the inner function to access 'kwargs'
+
+        if pixel_values is not None:
+            image_embeds = self.embed_images(pixel_values, **kwargs_dict)
+        else:
+            raise ValueError("Need pixel_values tensor")
+        
+        input_ids = kwargs_dict.get("input_ids", None)
+        if input_ids is None:
+            raise ValueError("input_ids tensor is required")
+    
+        # text_embeds = self.embed_text(input_ids)
+        inputs_embeds = self.merge_embeddings(text_embeds,
+                                                image_embeds,
+                                                input_ids
+                                                )
+        
+        return self.forward(inputs_embeds=inputs_embeds,
+                            return_probs=True,
+                            **kwargs_dict
+                            )
+        
 
     def predict(
         self,
