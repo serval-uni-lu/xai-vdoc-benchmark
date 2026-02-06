@@ -41,7 +41,7 @@ class BaseExplainer(ABC):
     def get_raw_attributions(self,
                              image,
                              question: str,
-                             target_indices: List[int],
+                             target_indices: Optional[int | List[int]],
                              **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Implement the specific XAI logic here (e.g., call Captum).

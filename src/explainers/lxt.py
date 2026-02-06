@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 from PIL import Image
 import torch
@@ -14,22 +14,43 @@ from src.models.factory import create_model_wrapper
 class LXTExplainer(BaseExplainer):
     def __init__(self,
                 model_wrapper: BaseVLMWrapper):
-        super().__init__(model_wrapper)
+        # super().__init__(model_wrapper)
+        self.wrapper = model_wrapper
         self.zennit_comp = None
-        self.apply_monkey_patch(verbose=True,
-                                use_zennit=False,
-                                )
-    
-    def apply_monkey_patch(self,
+
+        # Check & Apply Patches (Idempotent)
+        # This will update self.wrapper if a reload occurred
+        self._ensure_patched(verbose=True,
+                            use_zennit=False,
+                            )
+
+        # Update parent with the potentially new wrapper
+        super().__init__(self.wrapper)
+
+
+    def _ensure_patched(self,
                            verbose: bool = False,
                            use_zennit: bool = False,
                            ):
+        
+        # Get Patch Info from the wrapper (Delegated to wrapper logic)
+        if not hasattr(self.wrapper, "get_patch_map"):
+            print("[!] Wrapper does not support LXT patching auto-detection.")
+            return
+        
         
         module_root = self.wrapper.get_root_module()
         patch_dict = self.wrapper.get_patch_map()
         model_id = self.wrapper.model.config.name_or_path
         vlm_type = self.wrapper.model.config.model_type
+
+        # --- IDEMPOTENCY CHECK ---
+        # We check a flag on the module itself to see if we already touched it
+        if getattr(module_root, "__lxt_is_patched__", False):
+            # Already patched! Do not reload model.
+            return 
         
+        print(f"[*] Applying LXT Monkey Patches to {module_root}...")
         monkey_patch(module=module_root,
                      patch_map=patch_dict,
                      verbose=verbose)
@@ -37,15 +58,19 @@ class LXTExplainer(BaseExplainer):
         if use_zennit:
             monkey_patch_zennit(verbose=verbose)
         
+        # Mark as patched
+        setattr(module_root, "__lxt_is_patched__", True)
+        
         try:
             # 3. Load Model (It will now instantiate using PATCHED classes)
             # We use your factory from before
-            print(f"[*] Loading patched model: {model_id}")
-            wrapper = create_model_wrapper(model_id,
+            print(f"[*] Reloading patched model: {model_id}")
+            del self.wrapper
+            torch.cuda.empty_cache()
+
+            self.wrapper = create_model_wrapper(model_id,
                                            vlm_type=vlm_type)
             
-            self.wrapper = wrapper
-
         finally:
             print("[!] Exiting Patch Context.")
             print("[!] WARNING: Python classes are still modified in memory.")
@@ -55,12 +80,12 @@ class LXTExplainer(BaseExplainer):
         
         # Configure LXT (Zennit etc.)
         # Assuming you have a helper for this
-        zennit_comp = self.configure_lxt(wrapper.model,
+        zennit_comp = self._configure_lxt(self.wrapper.model,
                                         use_zennit=use_zennit,
                                         )
         self.zennit_comp = zennit_comp
         
-    def configure_lxt(self,
+    def _configure_lxt(self,
                       model: torch.nn.Module,
                       use_zennit=False):
 
@@ -94,7 +119,7 @@ class LXTExplainer(BaseExplainer):
     def get_raw_attributions(self,
                              image,
                              question: str,
-                             target_indices: List[int],
+                             target_indices: Optional[int| List[int]],
                              **kwargs
                              ) -> Tuple[torch.Tensor, torch.Tensor]:
         
@@ -103,13 +128,13 @@ class LXTExplainer(BaseExplainer):
         pixel_values = inputs["pixel_values"]
         kwargs_dict = {k: v for k, v in inputs.items() if k not in ['pixel_values']}
 
-        text_embeds = self.wrapper.embed_text(input_ids)
+        text_embeds = self.wrapper.embed_text(input_ids).clone().detach()
         text_embeds.requires_grad_(True)
         pixel_values.requires_grad_(True)
 
-        log_logits = self.wrapper(text_embeds, pixel_values,
-                                  return_probs=True,
-                                  **kwargs_dict,
+        log_logits = self.wrapper.get_captum_forward(text_embeds=text_embeds,
+                                                    pixel_values=pixel_values,
+                                                    kwargs_dict=kwargs_dict,
                                   )
         max_logits, _ = torch.max(log_logits, dim=-1)
         max_logits.backward()
@@ -123,6 +148,7 @@ class LXTExplainer(BaseExplainer):
         #relevance_img_norm = relevance_img / relevance_img.abs().max()
 
         relevance_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
+        torch.cuda.empty_cache()
 
         return relevance_text, relevance_img
     

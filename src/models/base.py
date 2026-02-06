@@ -99,12 +99,24 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
     def get_patch_map(self) -> Dict[str, Any]:
         pass
 
+    @abstractmethod
+    def get_tam_config(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Returns model-specific configuration required by Transition Attention Maps (TAM).
+        
+        Expected keys:
+            - vision_shape: Tuple[int, int] (H, W of the feature map)
+            - special_ids: Dict[str, List[int]] (Token IDs for parsing structure)
+            - vis_inputs: Any (The image representation TAM expects, e.g. numpy array)
+        """
+        pass
+
     def forward(self, 
                 input_ids: Optional[torch.Tensor] = None,
                 pixel_values: Optional[torch.Tensor] = None,
                 attention_mask: Optional[torch.Tensor] = None,
                 # image_grid_thw: Optional[torch.Tensor] = None,
-                text_embeds: Optional[torch.Tensor] = None,
+                # text_embeds: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 return_probs: bool = False,
                 **kwargs,
@@ -145,7 +157,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
             input_ids=input_ids,
             attention_mask=attention_mask,
             pixel_values=pixel_values,
-            text_embeds=text_embeds,
+            # text_embeds=text_embeds,
             inputs_embeds=inputs_embeds,
             use_cache=False,
             output_hidden_states=False,
@@ -162,36 +174,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         
         return target_logits
 
-    def _get_captum_forward(self,
-                           text_embeds: torch.Tensor,
-                           pixel_values: torch.Tensor,
-                           attention_mask: torch.Tensor,
-                           input_ids: torch.Tensor,
-                           return_probs: bool = False,
-                           **kwargs,
-                           ):
 
-            
-        if pixel_values is not None:
-            image_embeds = self.embed_images(pixel_values, **kwargs)
-        else:
-            raise ValueError("Need pixel_values tensor")
-        
-        if input_ids is not None:
-            # text_embeds = self.embed_text(input_ids)
-            inputs_embeds = self.merge_embeddings(text_embeds,
-                                                  image_embeds,
-                                                  input_ids
-                                                  )
-        else:
-            raise ValueError("Need input_ids tensor")
-
-        return self.forward(inputs_embeds=inputs_embeds,
-                            attention_mask=attention_mask,
-                            return_probs=return_probs,
-                            **kwargs
-                            )
-    
     def get_captum_forward(self, 
                        text_embeds, 
                        pixel_values, 
@@ -264,8 +247,8 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
                       for feats in outputs.hidden_states]
             return {
                 "text": decoded_text,
-                "full_ids": generated_ids,
-                "new_ids": new_ids,
+                "full_ids": generated_ids, # (Seq_Len,)
+                "new_ids": new_ids, # (Ans_Len,)
                 "logits": logits
             }
 

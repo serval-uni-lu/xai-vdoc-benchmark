@@ -1,4 +1,4 @@
-from typing import Literal, Tuple, List
+from typing import Literal, Tuple, List, Optional
 
 from PIL import Image
 import torch
@@ -32,7 +32,7 @@ class CaptumExplainer(BaseExplainer):
     def get_raw_attributions(self,
                              image,
                              question,
-                             target_indices: List[int],
+                             target_indices: Optional[int | List[int]],
                              **kwargs,
                             ) -> Tuple[torch.Tensor, torch.Tensor]:
         inputs = self.wrapper.get_inputs(image, question)
@@ -86,5 +86,6 @@ class CaptumExplainer(BaseExplainer):
         
         token_attr = token_attr.detach().cpu()
         pixel_attr = pixel_attr.detach().cpu()
+        torch.cuda.empty_cache()
 
         return token_attr, pixel_attr

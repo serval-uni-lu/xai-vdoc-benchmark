@@ -98,3 +98,22 @@ class QwenVL_Wrapper(BaseVLMWrapper):
         inputs = inputs.to(self.device)
 
         return inputs
+
+    def get_tam_config(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+
+        image_grid_thw = inputs.get('image_grid_thw')
+        if image_grid_thw is None:
+             # Fallback if batching stripped it, or default size
+             raise ValueError("TAM requires image_grid_thw for Qwen")
+        
+        vision_shape = (image_grid_thw[0, 1] // 2, image_grid_thw[0, 2] // 2)
+        
+        special_ids = {'img_id': [151652, 151653],
+                        'prompt_id': [151653, [151645, 198, 151644, 77091]], 
+                        'answer_id': [[198, 151644, 77091, 198], -1]}
+        
+        return {
+            "vision_shape": vision_shape,
+            "special_ids": special_ids,
+            #"vis_inputs": vis_inputs
+        }
