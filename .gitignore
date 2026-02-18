@@ -10,5 +10,6 @@ wheels/
 .venv
 
 # Folders
-data/
+datasets/
+!src/datasets/
 HF_TOKEN

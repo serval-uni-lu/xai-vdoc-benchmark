@@ -44,48 +44,89 @@ class CaptumExplainer(BaseExplainer):
 
         captum_forward = (text_embeds.requires_grad_(), pixel_values.requires_grad_())
         kwargs_dict = {k: v for k, v in inputs.items() if k not in ['pixel_values']}
-        # captum_add_forward = (attention_mask, input_ids, return_probs, kwargs)
-        captum_add_forward = (kwargs_dict)
-
-        baselines = None
+        
         use_baselines = False
         if self.xai_name in ["integrated"]:
             use_baselines = True
-    
-        if use_baselines:
-            token_reference = TokenReferenceBase(reference_token_idx=self.wrapper.processor.tokenizer.pad_token_id)
-            # generate reference for each sample
-            reference_ids = token_reference.generate_reference(
-                                    input_ids.shape[-1],
-                                    device=self.device
-                                    ).unsqueeze(0)
-            reference_embeds = self.wrapper.embed_text(reference_ids)
-            baselines = (reference_embeds, torch.zeros_like(pixel_values))
         
-        pred_result = self.wrapper.predict(inputs=inputs,
-                                           return_logits=False,
-                                           **kwargs,
-                                           )
-        new_ids = pred_result["new_ids"]
-        target_token = new_ids[target_indices].cpu().numpy().tolist()
+        pred_results = kwargs.get("pred_results", None)
+        if pred_results is None:
+            pred_results = self.wrapper.predict(inputs=inputs,
+                                            return_logits=False,
+                                            **kwargs,
+                                            )
+        new_ids = pred_results["new_ids"]
+        seq_len = len(new_ids)
+        # target_token = new_ids[target_indices].cpu().numpy().tolist()
 
-        # Get attributions
-        if use_baselines:
-            token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
-                                                            baselines=baselines,
-                                                            target=target_token,
-                                                            additional_forward_args=captum_add_forward,
-                                                            n_steps=5,
-                                                            internal_batch_size=1,
-                                                            )
-        else:
-            token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
-                                                target=target_token,
-                                                additional_forward_args=captum_add_forward,
-                                                )
+        token_attrs = []
+        pixel_attrs = []
+        for step_idx in range(seq_len):
+            target_token = new_ids[step_idx].item()
+
+            # --- DYNAMIC CONTEXT BUILDING ---
+            if step_idx == 0:
+                # Predicting the first token: context is just the prompt
+                current_input_ids = input_ids 
+            else:
+                # Predicting token T: context is prompt + previously generated tokens
+                step_ids = new_ids[:step_idx].unsqueeze(0) # Shape: (1, step_idx)
+                current_input_ids = torch.cat([input_ids, step_ids], dim=1)
+            
+            # Embed the dynamically growing text sequence
+            current_text_embeds = self.wrapper.embed_text(current_input_ids).requires_grad_()
+            captum_forward = (current_text_embeds, pixel_values.requires_grad_())
+
+            # Dynamically grow the attention mask if it exists
+            step_kwargs = kwargs_dict.copy()
+            step_kwargs["input_ids"] = current_input_ids
+            if "attention_mask" in step_kwargs:
+                # Add 1s for the newly appended tokens
+                extra_mask = torch.ones((1, step_idx),
+                                        dtype=step_kwargs["attention_mask"].dtype,
+                                        device=self.device)
+                step_kwargs["attention_mask"] = torch.cat([step_kwargs["attention_mask"],
+                                                                extra_mask],
+                                                           dim=1)
+                
+            
+            baselines = None
+            if use_baselines:
+                token_reference = TokenReferenceBase(
+                    reference_token_idx=self.wrapper.processor.tokenizer.pad_token_id)
+                # generate reference for each sample
+                reference_ids = token_reference.generate_reference(
+                                        current_input_ids.shape[-1],
+                                        device=self.device
+                                        ).unsqueeze(0)
+                reference_embeds = self.wrapper.embed_text(reference_ids)
+                baselines = (reference_embeds, torch.zeros_like(pixel_values))
+
+            # Get attributions
+            if use_baselines:
+                token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
+                                                        target=target_token,
+                                                        additional_forward_args=step_kwargs,
+                                                        baselines=baselines,
+                                                        n_steps=5,
+                                                        internal_batch_size=1,
+                                                        )
+            else:
+                token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
+                                                    target=target_token,
+                                                    additional_forward_args=step_kwargs,
+                                                    )
         
-        token_attr = token_attr.detach().cpu()
-        pixel_attr = pixel_attr.detach().cpu()
-        torch.cuda.empty_cache()
+            token_attr = token_attr.detach().cpu()
+            pixel_attr = pixel_attr.detach().cpu()
+            torch.cuda.empty_cache()
 
-        return token_attr, pixel_attr
+            if step_idx > 0 :
+                token_attr = token_attr[:, :-step_idx, :] # Remove the attribution for answer tokens
+            token_attrs.append(token_attr)
+            pixel_attrs.append(pixel_attr)
+
+        token_attrs = torch.cat(token_attrs, dim=0)
+        pixel_attrs = torch.stack(pixel_attrs, dim=0)
+
+        return token_attrs, pixel_attrs

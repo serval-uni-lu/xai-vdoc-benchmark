@@ -1,4 +1,5 @@
 import os, torch, cv2, subprocess
+from typing import Dict, Any
 # import fitz
 import numpy as np
 from scipy.optimize import minimize_scalar
@@ -450,7 +451,7 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
 
 def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
         processor, save_fn, target_token, img_scores_list, eval_only=False,
-        return_components=True):
+        return_components=True) -> Dict[str, Any]:
 
     """
     Generate a Token Activation Map (TAM) with optional Estimated Causal Inference (ECI) 
