@@ -17,7 +17,7 @@ def eval_image_perturbation_batch(
     descending: bool = True,        # True = Deletion (remove important first), False = (remove important last)
     filter_keywords: bool = True,   # If True, only tracks tokens that are "visually dependent"
     blur_baseline: Optional[Tensor] = None # Optional blurred image for keyword filtering
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, Any]:
     """
     Batch-level image perturbation evaluation specifically for VLMs.
     
@@ -225,6 +225,12 @@ def eval_image_perturbation_batch(
         # Normalize: (Current - Blur) / (Original - Blur)
         norm_score = (current_ins_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
         normalized_ins_scores[i] = norm_score
+    
+    # Compute AUC scores
+    norm_auc_del = np.trapezoid(normalized_del_scores,
+                                x=perturbation_steps, axis=0)
+    norm_auc_ins = np.trapezoid(normalized_ins_scores,
+                                x=perturbation_steps, axis=0)
 
     return {
         "baseline_scores": baseline_scores,               # Raw scores of original image
@@ -233,6 +239,8 @@ def eval_image_perturbation_batch(
         "normalized_del_scores": normalized_del_scores,   # (S, B) Normalized 0-1 scores (AUC ready)
         "raw_ins_scores_perturb": ins_scores_perturb,     # (S, B) Raw ins_scores at each step
         "normalized_ins_scores": normalized_ins_scores,   # (S, B) Normalized 0-1 scores (AUC ready)
+        "norm_auc_del": norm_auc_del,
+        "norm_auc_ins": norm_auc_ins,
     }
 
 @torch.no_grad()
@@ -247,7 +255,7 @@ def eval_token_perturbation_batch(
     descending: bool = True,         # True = Deletion (remove important first), False = (remove important last)
     filter_keywords: bool = True,
     # pixel_values are passed inside inputs or separately depending on your wrapper
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, Any]:
     
     device = model.device
     input_ids = inputs["input_ids"].to(device)
@@ -408,6 +416,12 @@ def eval_token_perturbation_batch(
         ins_curve[i] = s_ins
         norm_ins_curve[i] = (s_ins - blur_scores) / (baseline_scores - blur_scores + 1e-9)
 
+    # Compute AUC scores
+    norm_auc_del = np.trapezoid(norm_del_curve,
+                                x=perturbation_steps, axis=0)
+    norm_auc_ins = np.trapezoid(norm_ins_curve,
+                                x=perturbation_steps, axis=0)
+
     return {
         "baseline_scores": baseline_scores,
         "blur_scores": blur_scores,
@@ -415,8 +429,9 @@ def eval_token_perturbation_batch(
         "raw_ins_scores": ins_curve,
         "normalized_del_scores": norm_del_curve,
         "normalized_ins_scores": norm_ins_curve,
+        "norm_auc_del": norm_auc_del,
+        "norm_auc_ins": norm_auc_ins,
     }
-
 
 @torch.no_grad()
 def eval_multimodal_synergy_batch(
@@ -432,7 +447,7 @@ def eval_multimodal_synergy_batch(
     mask_value: float = 0.0,
     descending: bool = True,        # True = "Insertion" style (Start from 0, add Important)
     filter_keywords: bool = True,
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, Any]:
     """
     Computes the Synergy between Image and Text attributions.
     Formula: P(Img, Txt) - (P(Img, 0) + P(0, Txt))
@@ -736,6 +751,10 @@ def eval_multimodal_synergy_batch(
         ins_synergy_curve[i] = ins_synergy
         ins_norm_synergy_curve[i] = ins_synergy / normalizer_ins
 
+    del_norm_syn_auc = np.trapezoid(del_norm_synergy_curve,
+                                x=perturbation_steps, axis=0)
+    ins_norm_syn_auc = np.trapezoid(ins_norm_synergy_curve,
+                                x=perturbation_steps, axis=0)
 
     return {
         "del_synergy_curve": del_synergy_curve,
@@ -744,9 +763,8 @@ def eval_multimodal_synergy_batch(
         "del_norm_synergy_curve": del_norm_synergy_curve,
         "zeros_baseline": zeros_scores,
         "full_baseline": full_scores,
-        # "token_only_scores": token_only_scores,
-        # "pixel_only_scores": pixel_only_scores,
-
+        "del_norm_syn_auc": del_norm_syn_auc,
+        "ins_norm_syn_auc": ins_norm_syn_auc,
     }
 
 
@@ -781,7 +799,6 @@ def score_output(model: BaseVLMWrapper,
             
     scores = torch.stack(batch_scores).cpu().float()
     return scores
-
 
 def pred_probs(model: BaseVLMWrapper,
                inputs: Dict[str, Any],
@@ -872,7 +889,6 @@ def get_most_important_tokens_pixel(model: BaseVLMWrapper,
             target_positions.append(valid_indices)
     return target_positions
 
-
 def get_most_important_tokens_token(model: BaseVLMWrapper,
                                    inputs: Dict[str, Any],
                                    input_ids: torch.Tensor,
@@ -911,7 +927,6 @@ def get_most_important_tokens_token(model: BaseVLMWrapper,
             target_positions.append(valid_indices)
             
     return target_positions
-
 
 def get_most_important_tokens_multimodal(
         model: BaseVLMWrapper,

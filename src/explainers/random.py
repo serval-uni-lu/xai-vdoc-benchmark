@@ -44,7 +44,16 @@ class RandomExplainer(BaseExplainer):
         if pixel_values.ndim == 2: # batch is missing
             pixel_values = pixel_values.unsqueeze(0)
         
-        batch_size = input_ids.shape[0]
+        # batch_size = input_ids.shape[0]
+
+        pred_results = kwargs.get("pred_results", None)
+        if pred_results is None:
+            pred_results = self.wrapper.predict(inputs=inputs,
+                                            return_logits=False,
+                                            **kwargs,
+                                            )
+        new_ids = pred_results["new_ids"]
+        new_ids_len = len(new_ids)
 
         # 2. Set Seed for Reproducibility
         # We use a generator to avoid affecting the global RNG state
@@ -55,7 +64,7 @@ class RandomExplainer(BaseExplainer):
         # Shape: (B, Seq_Len) - One score per token
         seq_len = input_ids.shape[1]
         token_attributions = torch.rand(
-            (batch_size, seq_len), 
+            (new_ids_len, seq_len), 
             device=self.device, 
             generator=generator
         )
@@ -68,17 +77,25 @@ class RandomExplainer(BaseExplainer):
             _, _, h, w = pixel_values.shape
             # Generate random heatmap (B, H, W)
             pixel_attributions = torch.rand(
-                (batch_size, h, w), 
+                (new_ids_len, h, w), 
                 device=self.device, 
                 generator=generator
             )
         elif pixel_values.ndim == 3: # (B, num_patches, patch_dim)
             _, num_patches, _ = pixel_values.shape
-            pixel_attributions = torch.rand(
-                (batch_size, num_patches), 
-                device=self.device, 
-                generator=generator
-            )
+            try:
+                _, h, w = inputs["image_grid_thw"][0].cpu().numpy().tolist()
+                pixel_attributions = torch.rand(
+                    (new_ids_len, h, w), 
+                    device=self.device, 
+                    generator=generator
+                )
+            except _:  
+                pixel_attributions = torch.rand(
+                    (new_ids_len, num_patches), 
+                    device=self.device, 
+                    generator=generator
+                )
         else:
             raise ValueError("pixel_values shape must be (B, C, H, W) or (B, num_patches, patch_dim).")
 

@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-from typing import Union, List, Tuple
+from typing import Union, List
 
 def compute_pointing_game(
     heatmap: np.ndarray, 
@@ -111,7 +111,7 @@ def energy_point_game(mask_gt, saliency_map):
         
     return float(energy_bbox / energy_whole)
 
-def point_game(mask_gt, salie ncy_map):
+def point_game(mask_gt, saliency_map):
     assert (mask_gt.shape == saliency_map.shape)
     
     # Catch the blank map bug

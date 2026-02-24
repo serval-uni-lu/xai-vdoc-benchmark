@@ -48,7 +48,7 @@ class CaptumExplainer(BaseExplainer):
         use_baselines = False
         if self.xai_name in ["integrated"]:
             use_baselines = True
-        
+       
         pred_results = kwargs.get("pred_results", None)
         if pred_results is None:
             pred_results = self.wrapper.predict(inputs=inputs,

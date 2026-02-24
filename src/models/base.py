@@ -49,6 +49,20 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         super().to(device)
         return self
 
+    @property
+    @abstractmethod
+    def vision_module_name(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def llm_module_name(self) -> str:
+        pass
+    
+    @abstractmethod
+    def _get_original_attention_forward(self):
+        pass
+
     @abstractmethod
     def embed_images(self, pixel_values: torch.Tensor, **kwargs) -> torch.Tensor:
         """
@@ -333,3 +347,10 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         else:
             raise ValueError(f"Unknown mode {mode}")
 
+    @abstractmethod
+    def apply_patch(self):
+        pass
+
+    @abstractmethod
+    def remove_patch(self):
+        pass
