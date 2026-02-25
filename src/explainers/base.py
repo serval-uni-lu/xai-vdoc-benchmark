@@ -40,7 +40,7 @@ class BaseExplainer(ABC):
     @abstractmethod
     def get_raw_attributions(self,
                              image,
-                             question: str,
+                             text: str,
                              target_indices: Optional[int | List[int]],
                              **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """

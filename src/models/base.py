@@ -143,29 +143,8 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         1. If `inputs_embeds` is provided -> Use it directly (Fastest, for Merged XAI).
         2. Else if `text_embeds` is provided -> Combine with `pixel_values` (For Pixel XAI).
         3. Else -> Compute everything from scratch (Standard).
-        """
-
-        # # Prepare Inputs Embeddings
-        # if inputs_embeds is None:
-        #     # We need to build them
+        """          
             
-        #     if text_embeds is None:
-        #         if pixel_values is not None:
-        #             image_embeds = self.embed_images(pixel_values,
-        #                                      image_grid_thw=image_grid_thw)
-        #         else:
-        #             raise ValueError("Need pixel_values tensor")
-                
-        #         if input_ids is not None:
-        #             text_embeds = self.embed_text(input_ids)
-        #             inputs_embeds = self.merge_embeddings(
-        #             text_embeds, image_embeds, input_ids
-        #     )
-        #         else:
-        #             raise ValueError("Need input_ids tensor")        
-            
-            
-        
         # Note: We use the base generic model call
         outputs = self.model(
             input_ids=input_ids,

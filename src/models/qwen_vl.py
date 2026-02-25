@@ -1,14 +1,15 @@
 import importlib
 from types import ModuleType
-from typing import Any, Dict
+from typing import Any, Dict, Callable
 from functools import partial
 
 import torch
 import torch.nn as nn
 from torch.nn import Dropout
-from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
+import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as modeling_qwen2_5_vl
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLMLP
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from lxt.efficient.patches import patch_method, patch_attention
 from lxt.efficient.patches import rms_norm_forward, gated_mlp_forward, dropout_forward
 
@@ -17,6 +18,7 @@ from src.models.base import BaseVLMWrapper
 class QwenVL_Wrapper(BaseVLMWrapper):
     def __init__(self, model: nn.Module, processor: Any):
         super().__init__(model, processor)
+        self._get_original_attention_forward()
 
     def embed_text(self, input_ids: torch.Tensor
                    ) -> torch.Tensor:
@@ -117,3 +119,96 @@ class QwenVL_Wrapper(BaseVLMWrapper):
             "special_ids": special_ids,
             #"vis_inputs": vis_inputs
         }
+    
+    def _get_original_attention_forward(self):
+        self._vision_attention_forward = modeling_qwen2_5_vl.Qwen2_5_VLVisionAttention.forward
+        self._text_attention_forward = None
+    
+    def apply_patch(self):
+        modeling_qwen2_5_vl.Qwen2_5_VLVisionAttention.forward = patch_vision_forward
+
+    def remove_patch(self):
+        modeling_qwen2_5_vl.Qwen2_5_VLVisionAttention.forward = self._vision_attention_forward
+
+    @property
+    def vision_module_name(self) -> str:
+        return "Qwen2_5_VLVisionAttention"
+    
+    @property
+    def llm_module_name(self) -> str:
+        return "Qwen2_5_VLAttention"
+
+
+def patch_vision_forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        rotary_pos_emb: torch.Tensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        seq_length = hidden_states.shape[0]
+        query_states, key_states, value_states = (
+            self.qkv(hidden_states).reshape(seq_length, 3, self.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
+        )
+        cos, sin = position_embeddings
+        query_states, key_states = modeling_qwen2_5_vl.apply_rotary_pos_emb_vision(query_states, key_states, cos, sin)
+
+        query_states = query_states.transpose(0, 1).unsqueeze(0)
+        key_states = key_states.transpose(0, 1).unsqueeze(0)
+        value_states = value_states.transpose(0, 1).unsqueeze(0)
+
+        attention_interface: Callable = modeling_qwen2_5_vl.eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+
+        #if modeling_qwen2_5_vl.is_flash_attention_requested(self.config):
+        if self.config._attn_implementation == "flash_attention_2":
+            # Flash Attention: Use cu_seqlens for variable length attention
+            max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask=None,
+                scaling=self.scaling,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                cu_seq_lens_q=cu_seqlens,
+                cu_seq_lens_k=cu_seqlens,
+                max_length_q=max_seqlen,
+                max_length_k=max_seqlen,
+                is_causal=False,
+                **kwargs,
+            )
+        else:
+            # Other implementations: Process each chunk separately
+            lengths = cu_seqlens[1:] - cu_seqlens[:-1]
+            splits = [
+                torch.split(tensor, lengths.tolist(), dim=2) for tensor in (query_states, key_states, value_states)
+            ]
+
+            attn_outputs, attn_weights = map(list,
+                zip(*(                                             
+                attention_interface(
+                    self,
+                    q,
+                    k,
+                    v,
+                    attention_mask=None,
+                    scaling=self.scaling,
+                    dropout=0.0 if not self.training else self.attention_dropout,
+                    is_causal=False,
+                    **kwargs,
+                )
+                for q, k, v in zip(*splits)
+                ))
+            )
+            attn_output = torch.cat(attn_outputs, dim=1)
+
+        # Save here the visual attention weights
+        self.saved_attn_weights = attn_weights
+        attn_output = attn_output.reshape(seq_length, -1).contiguous()
+        attn_output = self.proj(attn_output)
+        return attn_output

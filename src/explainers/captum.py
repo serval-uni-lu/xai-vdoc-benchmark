@@ -31,11 +31,11 @@ class CaptumExplainer(BaseExplainer):
     
     def get_raw_attributions(self,
                              image,
-                             question,
+                             text,
                              target_indices: Optional[int | List[int]],
                              **kwargs,
                             ) -> Tuple[torch.Tensor, torch.Tensor]:
-        inputs = self.wrapper.get_inputs(image, question)
+        inputs = self.wrapper.get_inputs(image, text)
 
         input_ids = inputs["input_ids"]
         pixel_values = inputs["pixel_values"]  #.unsqueeze(0)

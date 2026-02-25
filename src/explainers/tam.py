@@ -15,13 +15,13 @@ class TAMExplainer(BaseExplainer):
 
     def get_raw_attributions(self,
                             image,
-                            question: str,
+                            text: str,
                             target_indices: Optional[int | List[int]],
                             **kwargs
                             ) -> Tuple[torch.Tensor, torch.Tensor]:
         
 
-        inputs = self.wrapper.get_inputs(image, question)
+        inputs = self.wrapper.get_inputs(image, text)
 
         pred_results = kwargs.get("pred_results", None)
         if pred_results is None:
