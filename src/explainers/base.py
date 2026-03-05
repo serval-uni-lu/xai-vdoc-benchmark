@@ -47,5 +47,7 @@ class BaseExplainer(ABC):
         Implement the specific XAI logic here (e.g., call Captum).
         Must return a tensor of shape (Batch, Seq_Len, Hidden_Dim) 
         corresponding to inputs_embeds.
+        Return Token attribution of shape (num_answer_tokens, input_ids.shape[1])
+        and Pixel attribution of shape (num_answer_tokens, H, W) or (num_answer_tokens, pixel_values.shape[0])
         """
         pass

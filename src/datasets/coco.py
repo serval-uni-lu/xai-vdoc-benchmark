@@ -14,9 +14,9 @@ class COCOGroundingDataset(Dataset):
             data_path (str): Path to image folder (e.g., 'val2017')
         """
         self.data_path = data_path
-        coco_split = "val2017"
-        instances_file = os.path.join(self.data_path, "annotations", f"instances_{coco_split}.json")
-        captions_file = os.path.join(self.data_path, "annotations", f"captions_{coco_split}.json")
+        self.coco_split = "val2017"
+        instances_file = os.path.join(self.data_path, "annotations", f"instances_{self.coco_split}.json")
+        captions_file = os.path.join(self.data_path, "annotations", f"captions_{self.coco_split}.json")
 
         self.coco_instances = COCO(instances_file)
         self.coco_captions = COCO(captions_file)
@@ -38,7 +38,7 @@ class COCOGroundingDataset(Dataset):
         
         # --- 1. Load Image ---
         img_info = self.coco_instances.loadImgs(img_id)[0]
-        img_path = os.path.join(self.data_path, "val2017", img_info['file_name'])
+        img_path = os.path.join(self.data_path, self.coco_split, img_info['file_name'])
         image = Image.open(img_path).convert('RGB')
         
         # --- 2. Load Captions ---

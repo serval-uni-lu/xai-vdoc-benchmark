@@ -86,7 +86,7 @@ class RandomExplainer(BaseExplainer):
             try:
                 _, h, w = inputs["image_grid_thw"][0].cpu().numpy().tolist()
                 pixel_attributions = torch.rand(
-                    (new_ids_len, h, w), 
+                    (new_ids_len, h*w), 
                     device=self.device, 
                     generator=generator
                 )

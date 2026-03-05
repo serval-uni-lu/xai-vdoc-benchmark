@@ -11,7 +11,7 @@ def eval_image_perturbation_batch(
     model: BaseVLMWrapper,
     inputs: Dict[str, Any],
     target_ids: Tensor,             # (B, L_label) - The expected answer tokens
-    pixel_attribution: Tensor,      # (B, H, W)
+    pixel_attribution: Tensor,      # (B, H, W) or (B, num_patches)
     perturbation_steps: Sequence[float],
     mask_value: float = 0.0,
     descending: bool = True,        # True = Deletion (remove important first), False = (remove important last)
@@ -785,19 +785,36 @@ def score_output(model: BaseVLMWrapper,
                             )
     
     # FIX: Handle variable length positions manually per batch item
-    batch_scores = []
-    for b in range(probs_pred.shape[0]):
-        # Select the specific tokens for this batch item
-        p = positions[b].to(probs_pred.device)
-        if len(p) == 0:
-            batch_scores.append(torch.tensor(0.0, device=probs_pred.device))
-        else:
-            # probs_pred[b] is (Seq_Len,)
-            # We gather the specific keyword probabilities
-            s = probs_pred[b, p].sum() / len(p)
-            batch_scores.append(s)
+    # batch_scores = []
+    # for b in range(probs_pred.shape[0]):
+    #     # Select the specific tokens for this batch item
+    #     p = positions[b].to(probs_pred.device)
+    #     if len(p) == 0:
+    #         batch_scores.append(torch.tensor(0.0, device=probs_pred.device))
+    #     else:
+    #         # probs_pred[b] is (Seq_Len,)
+    #         # We gather the specific keyword probabilities
+    #         s = probs_pred[b, p].sum() / len(p)
+    #         batch_scores.append(s)
             
-    scores = torch.stack(batch_scores).cpu().float()
+    # scores = torch.stack(batch_scores).cpu().float()
+
+    # Fix
+    batch_size = probs_pred.shape[0]
+    device = probs_pred.device
+    
+    # FIX: Vectorized position scoring
+    # Pre-allocate the result tensor on the GPU
+    batch_scores = torch.zeros(batch_size, dtype=torch.float32, device=device)
+    
+    for b in range(batch_size):
+        p = positions[b].to(device)
+        if len(p) > 0:
+            # Gather and mean directly on the GPU, much faster than appending to a list
+            batch_scores[b] = probs_pred[b, p].sum()
+            
+    scores = batch_scores.cpu()
+
     return scores
 
 def pred_probs(model: BaseVLMWrapper,
@@ -810,6 +827,9 @@ def pred_probs(model: BaseVLMWrapper,
     device = model.device
     
     attention_mask = torch.ones_like(new_input_ids).to(device)
+    # pad_token_id = model.processor.tokenizer.pad_token_id if model.processor.tokenizer.pad_token_id is not None else 0
+    # attention_mask = (new_input_ids != pad_token_id).long().to(device)
+
     other_kwargs = {k: v \
                     for k, v in inputs.items() \
                     if k not in ['input_ids','pixel_values', 'attention_mask']}
@@ -823,20 +843,15 @@ def pred_probs(model: BaseVLMWrapper,
             **other_kwargs,
         ) # [batch_size, seq_len, vocab_size]
     all_logits = outputs.logits
-    # print(all_logits.shape)
 
     returned_logits = all_logits[:, -output_ids.shape[-1]-1:-1, :] # The reason for the minus 1 is that the generated content is in the previous position
-    returned_logits = F.softmax(returned_logits, dim=-1) # (batch_size, selected_tokens, vocab_size)
-    # print(returned_logits.shape)
+    # returned_logits = F.softmax(returned_logits, dim=-1) # (batch_size, selected_tokens, vocab_size)
+    returned_logits = F.log_softmax(returned_logits, dim=-1) # (batch_size, selected_tokens, vocab_size)
     
-    # selected_token_word_id = torch.tensor(selected_token_word_id).to(model.device)
-    # indices = selected_token_word_id.unsqueeze(0).unsqueeze(-1) # [1, N, 1]
-    
-    # returned_logits = returned_logits.gather(dim=2, index=indices) # [1, N, 1]
-    # returned_logits = returned_logits.squeeze(-1)  # [1, N]
+
     returned_logits = returned_logits.gather(dim=2, index=output_ids.unsqueeze(-1)).squeeze(-1) # (batch_size, selected_tokens)
-    # print(returned_logits.shape)
     return returned_logits
+
 
 def get_most_important_tokens_pixel(model: BaseVLMWrapper,
                                     inputs: Dict[str, Any],

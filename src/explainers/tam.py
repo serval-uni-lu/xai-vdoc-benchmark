@@ -7,6 +7,7 @@ import torch
 from src.explainers import BaseExplainer
 from src.models import BaseVLMWrapper
 from src.explainers.tam_utils.tam import get_attributions, TAM
+from src.explainers.utils import align_llm_visuals_to_pixels
 
 class TAMExplainer(BaseExplainer):
     def __init__(self,
@@ -71,14 +72,19 @@ class TAMExplainer(BaseExplainer):
                         )
         
             img_attribution = result["img_map_norm"]
-            text_attribution = result["prompt_scores_raw"]
+            text_attribution = result["txt_scores_raw"]
+            #print(text_attribution.shape)
         
             text_attributions.append(text_attribution)
             img_attributions.append(img_attribution)
+        #img_attributions = img_attributions[-1]
         
         img_attributions = [torch.from_numpy(_).float() for _ in img_attributions]
         text_attributions = [torch.from_numpy(_).float() for _ in text_attributions]
         img_attributions = torch.stack(img_attributions)
+        img_attributions = img_attributions.reshape(img_attributions.shape[0], -1)
         text_attributions = torch.stack(text_attributions)
+
+        img_attributions = align_llm_visuals_to_pixels(img_attributions, inputs)
 
         return text_attributions, img_attributions

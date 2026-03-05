@@ -581,7 +581,10 @@ def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
     answer_scores = scores[answer_idx[0] + 1:]
     txt_scores = np.concatenate([prompt_scores, last_prompt, answer_scores], -1)
 
-    txt_scores_raw = scores.copy()          # raw logit-based scores for all text positions
+    # txt_scores_raw = scores.copy()          # raw logit-based scores for all text positions
+    input_ids_len = logit_list[0].shape[1]
+    txt_scores_raw = scores[round_idx*input_ids_len: (round_idx+1) * input_ids_len] # Take the text raw logit (CAM)
+    # prompt_scores_raw = prompt_scores.copy()
     prompt_scores_raw = prompt_scores.copy()
     answer_scores_raw = answer_scores.copy()
 

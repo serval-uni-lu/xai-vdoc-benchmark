@@ -5,14 +5,14 @@ import string
 import nltk
 
 class OntologyMapper:
-    def __init__(self, coco_categories, threshold=0.5):
+    def __init__(self, coco_categories, threshold=0.5, device=None):
         """
         Args:
             coco_categories (dict): {id: "name"} e.g., {3: "car", 4: "motorcycle"}
             threshold (float): Minimum cosine similarity to accept a match.
         """
         # Load a tiny, blazingly fast embedding model
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
         self.threshold = threshold
         
         self.category_ids = list(coco_categories.keys())

@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from src.models import BaseVLMWrapper
 from src.explainers import BaseExplainer
+from src.explainers.utils import align_llm_visuals_to_pixels
 
 def stitch_chunks_to_matrix(chunk_list):
     """Helper to stitch block-diagonal chunks for Qwen-VL."""
@@ -219,36 +220,37 @@ class RolloutExplainer(BaseExplainer):
         # Slice the LLM attention (Shape: [Num_Generated_Tokens, Num_Image_Tokens])
         text_to_image_attn = t_rollout[t_start:t_end, final_image_mask]
     
-        pixel_values = inputs["pixel_values"]
 
-        if pixel_values.ndim >= 3 and pixel_values.shape[-3] in [1, 3, 4]:
-            # Standard VLM and shape is (C, H, W) or (batch_size, C, H, W)
-            text_to_vit_attn = text_to_image_attn
-            num_pixels = v_rollout.shape[0]
+        text_to_vit_attn = align_llm_visuals_to_pixels(text_to_image_attn, inputs)
+
+        # if pixel_values.ndim >= 3 and pixel_values.shape[-3] in [1, 3, 4]:
+        #     # Standard VLM and shape is (C, H, W) or (batch_size, C, H, W)
+        #     text_to_vit_attn = text_to_image_attn
+        #     num_pixels = v_rollout.shape[0]
         
-        else:
-            # Shape is (grid_h*grid_w, patch_dim)
+        # else:
+        #     # Shape is (grid_h*grid_w, patch_dim)
 
-            _, grid_h, grid_w = inputs['image_grid_thw'][0].cpu().numpy().tolist()
-            spatial_merge_size = 2
-            llm_grid_h = grid_h // spatial_merge_size
-            llm_grid_w = grid_w // spatial_merge_size
-            num_vit_tokens = grid_h * grid_w
+        #     _, grid_h, grid_w = inputs['image_grid_thw'][0].cpu().numpy().tolist()
+        #     spatial_merge_size = 2
+        #     llm_grid_h = grid_h // spatial_merge_size
+        #     llm_grid_w = grid_w // spatial_merge_size
+        #     num_vit_tokens = grid_h * grid_w
 
-            # Reshape LLM attention to its 2D grid
-            # Shape: [Num_Generated_Tokens, 1, grid_h, grid_w]
-            llm_attn_2d = text_to_image_attn.reshape(-1, 1, llm_grid_h, llm_grid_w)
+        #     # Reshape LLM attention to its 2D grid
+        #     # Shape: [Num_Generated_Tokens, 1, grid_h, grid_w]
+        #     llm_attn_2d = text_to_image_attn.reshape(-1, 1, llm_grid_h, llm_grid_w)
 
-            # Spatially upsample the grid to match the ViT's resolution!
-            # We use 'nearest' so the LLM's attention is evenly distributed to the 4 sub-patches
-            vit_attn_2d = torch.nn.functional.interpolate(
-                llm_attn_2d, 
-                scale_factor=spatial_merge_size, 
-                mode='nearest'
-            )
+        #     # Spatially upsample the grid to match the ViT's resolution!
+        #     # We use 'nearest' so the LLM's attention is evenly distributed to the 4 sub-patches
+        #     vit_attn_2d = torch.nn.functional.interpolate(
+        #         llm_attn_2d, 
+        #         scale_factor=spatial_merge_size, 
+        #         mode='nearest'
+        #     )
 
-            # Flatten back to 1D to match the ViT Rollout
-            text_to_vit_attn = vit_attn_2d.reshape(-1, num_vit_tokens)
+        #     # Flatten back to 1D to match the ViT Rollout
+        #     text_to_vit_attn = vit_attn_2d.reshape(-1, num_vit_tokens)
 
         # Fuse informations from visual matrices and visual_tokens matrices
         # [gen_len, num_pixels] x [num_pixels, num_pixels] -> [gen_len, num_pixels]
