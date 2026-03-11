@@ -13,10 +13,13 @@ from src.models.factory import create_model_wrapper
 
 class LXTExplainer(BaseExplainer):
     def __init__(self,
-                model_wrapper: BaseVLMWrapper):
+                model_wrapper: BaseVLMWrapper,
+                token_wise = True,
+                ):
         # super().__init__(model_wrapper)
         self.wrapper = model_wrapper
         self.zennit_comp = None
+        self.token_wise = token_wise
 
         # Check & Apply Patches (Idempotent)
         # This will update self.wrapper if a reload occurred
@@ -65,11 +68,13 @@ class LXTExplainer(BaseExplainer):
             # 3. Load Model (It will now instantiate using PATCHED classes)
             # We use your factory from before
             print(f"[*] Reloading patched model: {model_id}")
+            device = self.wrapper.device
             del self.wrapper
-            torch.cuda.empty_cache()
-
+            
             self.wrapper = create_model_wrapper(model_id,
                                            vlm_type=vlm_type)
+            self.wrapper.to_device(device)
+            torch.cuda.empty_cache()
             
         finally:
             print("[!] Exiting Patch Context.")
@@ -119,36 +124,114 @@ class LXTExplainer(BaseExplainer):
     def get_raw_attributions(self,
                              image,
                              text: str,
-                             target_indices: Optional[int| List[int]],
-                             **kwargs
-                             ) -> Tuple[torch.Tensor, torch.Tensor]:
+                             target_indices: Optional[int | List[int]] = None,
+                             # token_wise: bool = True,
+                             **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         
+        # 1. SETUP PRISTINE INPUTS
         inputs = self.wrapper.get_inputs(image, text)
-        input_ids = inputs["input_ids"]
-        pixel_values = inputs["pixel_values"]
+
+        pred_results = kwargs.get("pred_results", None)
+        if pred_results is None:
+            pred_results = self.wrapper.predict(inputs=inputs,
+                                            return_logits=False,
+                                            **kwargs,
+                                            )
+        full_ids = pred_results["full_ids"]
+
+        t_start = inputs["input_ids"].shape[1]
+        t_end = full_ids.shape[-1]
+        gen_len = t_end - t_start
+
+        # Default to explaining all generated tokens if none specified
+        if target_indices is None:
+            target_indices = list(range(gen_len))
+
+        # Build full sequence inputs
+        inputs["input_ids"] = full_ids.clone().unsqueeze(0)
+        inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
+
+
+        pixel_values = inputs["pixel_values"].clone().detach()
+        pixel_values.requires_grad_(True)
+        
         kwargs_dict = {k: v for k, v in inputs.items() if k not in ['pixel_values']}
 
-        text_embeds = self.wrapper.embed_text(input_ids).clone().detach()
+        # We must get the embeddings for the FULL sequence to pass to Captum/LRP
+        text_embeds = self.wrapper.embed_text(inputs["input_ids"]).clone().detach()
         text_embeds.requires_grad_(True)
-        pixel_values.requires_grad_(True)
 
-        log_logits = self.wrapper.get_captum_forward(text_embeds=text_embeds,
-                                                    pixel_values=pixel_values,
-                                                    kwargs_dict=kwargs_dict,
-                                  )
-        max_logits, _ = torch.max(log_logits, dim=-1)
-        max_logits.backward()
+        # 2. RUN FORWARD PASS
+        # (Zennit composite should already be registered on the model from _ensure_patched)
+        log_logits = self.wrapper.get_captum_forward(
+            text_embeds=text_embeds,
+            pixel_values=pixel_values,
+            kwargs_dict=kwargs_dict,
+            return_full_sequence=True
+        )
 
+        # 3. CAUSAL GATHER
+        # log_logits shape: [1, seq_len, vocab_size]
+        gen_logits = log_logits[:, t_start-1 : t_end-1, :]
+        gen_ids_1d = full_ids.squeeze()[t_start:t_end].to(dtype=torch.long, device=gen_logits.device)
+        generated_token_ids = gen_ids_1d.unsqueeze(0).unsqueeze(-1)
+        
+        # Gather the specific logits of the generated words!
+        # target_logits shape: [1, gen_len]
+        target_logits = gen_logits.gather(dim=-1, index=generated_token_ids).squeeze(-1)
+
+        token_attributions = []
+        pixel_attributions = []
+
+        # 4. BACKWARD PASS ENGINE (Gradient * Activation)
+        if not self.token_wise:
+            # --- SENTENCE-LEVEL ---
+            self.wrapper.model.zero_grad()
+            
+            # Sum the target logits for the requested indices
+            sentence_score = target_logits[0, target_indices].sum()
+            sentence_score.backward(retain_graph=True)
+            
+            # LRP Rule: Relevance = Gradient * Activation
+            rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+            rel_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
+            
+            # Store
+            token_attributions.append(rel_text)
+            pixel_attributions.append(rel_img)
+            
+        else:
+            # --- TOKEN-WISE ---
+            for idx in target_indices:
+                # Clear gradients from the previous token!
+                self.wrapper.model.zero_grad()
+                if pixel_values.grad is not None: pixel_values.grad.zero_()
+                if text_embeds.grad is not None: text_embeds.grad.zero_()
+                
+                # Backpropagate just this specific token
+                target_logits[0, idx].backward(retain_graph=True)
+                
+                # LRP Rule: Relevance = Gradient * Activation
+                rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+                rel_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
+                
+                token_attributions.append(rel_text)
+                pixel_attributions.append(rel_img)
+
+        # 5. CLEANUP & FORMATTING
         if self.zennit_comp is not None:
-            # Remove the registered composite to prevent interference in future iterations
             self.zennit_comp.remove()
-
-        # if full_relevance:
-        relevance_img = (pixel_values.grad * pixel_values).float().detach().cpu()
-        #relevance_img_norm = relevance_img / relevance_img.abs().max()
-
-        relevance_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
+            self.zennit_comp = None # Ensure it doesn't get removed twice
+            
         torch.cuda.empty_cache()
 
+        # Stack into [len(target_indices), num_pixels] tensors
+        relevance_img = torch.stack(pixel_attributions, dim=0)
+        relevance_text = torch.cat(token_attributions, dim=0)
+
+        # Slice the text relevance to only include the prompt if desired, 
+        # or leave as full sequence length.
+        relevance_text = relevance_text[:, :t_start]
+        
         return relevance_text, relevance_img
-    
+

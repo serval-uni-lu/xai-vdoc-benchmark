@@ -102,7 +102,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         pass
 
     @abstractmethod
-    def get_inputs(self, image, question) -> Dict[str, Any]:
+    def get_inputs(self, image, text) -> Dict[str, Any]:
         pass
 
     @abstractmethod
@@ -133,6 +133,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
                 # text_embeds: Optional[torch.Tensor] = None,
                 inputs_embeds: Optional[torch.Tensor] = None,
                 return_probs: bool = False,
+                return_full_sequence: bool = False,
                 **kwargs,
                 ) -> torch.Tensor:
         """
@@ -159,6 +160,11 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         
         logits = outputs.logits # (B, seq_len, vocab_size)
         
+        if return_full_sequence: # (B, seq_len, vocab_size)
+            if return_probs:
+                return torch.nn.functional.log_softmax(logits, dim=-1)
+            return logits
+
         # Default: The logit of the last token
         target_logits = logits[:, -1]  # (B, vocab_size)
 
@@ -171,7 +177,9 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
     def get_captum_forward(self, 
                        text_embeds, 
                        pixel_values, 
-                       kwargs_dict): # <--- This catches attention_mask, image_grid_thw, etc.
+                       kwargs_dict,
+                       return_full_sequence: bool = False,
+                       ): # <--- This catches attention_mask, image_grid_thw, etc.
         
         # We capture 'kwargs' here. 
         # Python closures automatically allow the inner function to access 'kwargs'
@@ -193,6 +201,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         
         return self.forward(inputs_embeds=inputs_embeds,
                             return_probs=True,
+                            return_full_sequence=return_full_sequence,
                             **kwargs_dict
                             )
         

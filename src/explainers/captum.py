@@ -126,7 +126,10 @@ class CaptumExplainer(BaseExplainer):
             token_attrs.append(token_attr)
             pixel_attrs.append(pixel_attr)
 
-        token_attrs = torch.cat(token_attrs, dim=0)
-        pixel_attrs = torch.stack(pixel_attrs, dim=0)
+        token_attrs = torch.cat(token_attrs, dim=0) # (seq_len, input_ids.shape[-1], hidden_dim)
+        pixel_attrs = torch.stack(pixel_attrs, dim=0) # (seq_len, num_pixels, hidden_dim)
+
+        token_attrs = token_attrs.sum(-1)
+        pixel_attrs = pixel_attrs.sum(-1)
 
         return token_attrs, pixel_attrs

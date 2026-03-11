@@ -8,6 +8,8 @@ import numpy as np
 
 from src.models import BaseVLMWrapper
 from src.explainers import BaseExplainer
+from src.explainers.utils import align_llm_visuals_to_pixels
+
 
 class LLaVACAMExplainer(BaseExplainer):
     def __init__(self, 
@@ -68,10 +70,9 @@ class LLaVACAMExplainer(BaseExplainer):
         # Slice the sequence down to just the tokens we care about
         # Shape: [num_selected_tokens, Channels]
 
-        if self.gradients is None:
-            raise RuntimeError(f"Gradients were dropped or not initialized")
-        if self.feature_maps is None:
-            raise RuntimeError(f"Feature maps were dropped or not initialized")
+        if self.gradients is None or self.feature_maps is None:
+            raise RuntimeError(f"Gradients or Feature maps were dropped/not initialized")
+
 
         activations = self.feature_maps
         gradients = self.gradients
@@ -89,7 +90,7 @@ class LLaVACAMExplainer(BaseExplainer):
 
         # Average across the channel dimension to get a single score per token
         # Shape: [num_selected_tokens]
-        cam = weighted_feats.mean(dim=-1)
+        cam = weighted_feats.sum(dim=-1)
 
         # Grad-CAM requires a ReLU to keep only positive contributions
         cam = nn.functional.relu(cam)
@@ -109,53 +110,44 @@ class LLaVACAMExplainer(BaseExplainer):
             raise TypeError(f"Unsupported input type: {type(image)}")
 
         img_arr = np.array(pil_img).astype(np.float32)
-
         noise = np.random.normal(0, noise_std * 255, img_arr.shape)
-
         noisy_arr = np.clip(img_arr + noise, 0, 255).astype(np.uint8)
 
         noisy_pil = Image.fromarray(noisy_arr)
 
         return noisy_pil
 
+    
     def get_raw_attributions(self,
-                            image,
-                            text,
+                            image, text,
                             target_indices=None,
-                            **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-             
-        if self.num_samples == 0:
-            smooth_token_cam, smooth_pixel_cam = self.llava_cam(image=image,
-                                                            text=text,
-                                                            **kwargs
-                                                            )
-        else:
-            smooth_token_cam = None
-            smooth_pixel_cam = None
-            for _ in range(self.num_samples):
-                # Generate noisy image
-                noisy_img = self._add_noise(image, noise_std=self.noise_std)
-                noisy_token_cam, noisy_pixel_cam = self.llava_cam(image=noisy_img,
-                                                                text=text,
-                                                                **kwargs
-                                                                )
-                if smooth_token_cam is None:
-                    smooth_token_cam = noisy_token_cam
-                else:
-                    smooth_token_cam += noisy_token_cam
-                
-                if smooth_pixel_cam is None:
-                    smooth_pixel_cam = noisy_pixel_cam
-                else:
-                    smooth_pixel_cam += noisy_pixel_cam
-            
-            # Average
-            if smooth_token_cam:
-                smooth_token_cam /= self.num_samples
-            if smooth_pixel_cam:
-                smooth_pixel_cam /= self.num_samples
+                            **kwargs
+                            ) -> Tuple[torch.Tensor, torch.Tensor]:
         
-        return smooth_token_cam, smooth_pixel_cam   
+        # Grad-CAM
+        if self.num_samples <= 1:
+            smooth_token_cam, smooth_pixel_cam = self.llava_cam(image=image,
+                                                                text=text,
+                                                                **kwargs)
+            return smooth_token_cam, smooth_pixel_cam
+
+        # SmoothGRAD-CAM (or Llava-CAM)
+        # First run to get shape and type
+        noisy_img = self._add_noise(image, noise_std=self.noise_std)
+        smooth_token_cam, smooth_pixel_cam = self.llava_cam(image=noisy_img, text=text, **kwargs)
+
+        for _ in range(self.num_samples - 1):
+            noisy_img = self._add_noise(image, noise_std=self.noise_std)
+            t_cam, p_cam = self.llava_cam(image=noisy_img, text=text, **kwargs)
+            
+            smooth_token_cam += t_cam
+            smooth_pixel_cam += p_cam
+        
+        # Average
+        smooth_token_cam /= self.num_samples
+        smooth_pixel_cam /= self.num_samples
+
+        return smooth_token_cam, smooth_pixel_cam
 
     def llava_cam(self,
             image,
@@ -167,10 +159,14 @@ class LLaVACAMExplainer(BaseExplainer):
         """
 
         inputs = self.wrapper.get_inputs(image, text)
-
-        full_ids = kwargs.get("full_ids", None) # (seq_len,)
-        if full_ids is None:
-            raise ValueError("You should pass the generated_ids tensor")
+        
+        pred_results = kwargs.get("pred_results", None)
+        if pred_results is None:
+            pred_results = self.wrapper.predict(inputs=inputs,
+                                            return_logits=False,
+                                            **kwargs,
+                                            )
+        full_ids = pred_results["full_ids"]
         
         # Define the indices of the answers tokens and visual tokens 
         t_start = inputs["input_ids"].shape[1]
@@ -217,7 +213,7 @@ class LLaVACAMExplainer(BaseExplainer):
                         raise RuntimeError(f"Gradients were dropped at iteration {i}")
 
                     # Compute CAM for each word
-                    tok_attr = self.compute_cam(final_text_mask)
+                    tok_attr = self.compute_cam(prompt_mask)
                     pix_attr = self.compute_cam(final_image_mask)
 
                     self.gradients = None
@@ -241,6 +237,8 @@ class LLaVACAMExplainer(BaseExplainer):
                 # Compute text and image attributions
                 token_attribution = self.compute_cam(final_text_mask).unsqueeze(0)
                 pixel_attribution = self.compute_cam(final_image_mask).unsqueeze(0)               
+
+        pixel_attribution = align_llm_visuals_to_pixels(pixel_attribution, inputs)
 
         return token_attribution, pixel_attribution
     

@@ -75,13 +75,13 @@ class QwenVL_Wrapper(BaseVLMWrapper):
             }
         return attnLRP
 
-    def get_inputs(self, image, question) -> Dict[str, Any]:
+    def get_inputs(self, image, text) -> Dict[str, Any]:
         messages = [
             {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": question},
+                    {"type": "text", "text": text},
                 ],
             }
         ]

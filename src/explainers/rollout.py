@@ -125,24 +125,25 @@ class RolloutExplainer(BaseExplainer):
         rollout = torch.eye(seq_len).to(stitched_attns[0].device)
 
         if gradients is not None and len(gradients) > 0:
-            # GRADIENT ROLLOUT
+            # GRADIENT ROLLOUT (Chefer et al. 2021)
             stitched_grads = [stitch_chunks_to_matrix(layer) for layer in gradients]
             # Gradients populate backwards, so we reverse them to align with attentions
             stitched_grads.reverse() 
 
             for attn, grad in zip(stitched_attns, stitched_grads):
-                grad = torch.clamp(grad, min=0.0) # ReLU
-                grad_attn = (attn * grad).mean(dim=1).squeeze(0)
+                grad_attn = attn*grad
+                grad_attn = torch.clamp(grad_attn, min=0.0) # ReLU
+                grad_attn = grad_attn.mean(dim=1).squeeze(0)
                 grad_attn = grad_attn + torch.eye(seq_len).to(grad_attn.device)
-                grad_attn = F.normalize(grad_attn, p=1, dim=-1)
-                rollout = torch.matmul(rollout, grad_attn)
+                # grad_attn = F.normalize(grad_attn, p=1, dim=-1)
+                rollout = torch.matmul(grad_attn, rollout)
         else:
-            # STANDARD ROLLOUT
+            # STANDARD ROLLOUT (Abnar et al. 2020)
             for attn in stitched_attns:
                 attn_fused = attn.mean(dim=1).squeeze(0)
                 attn_fused = attn_fused + torch.eye(seq_len).to(attn_fused.device)
                 attn_fused = F.normalize(attn_fused, p=1, dim=-1)
-                rollout = torch.matmul(rollout, attn_fused)
+                rollout = torch.matmul(attn_fused, rollout)
 
         return rollout
     
@@ -156,9 +157,17 @@ class RolloutExplainer(BaseExplainer):
         
         inputs = self.wrapper.get_inputs(image, text)
 
-        full_ids = kwargs.get("full_ids", None) # (seq_len,)
-        if full_ids is None:
-            raise ValueError("You should pass the generated_ids tensor")
+        # full_ids = kwargs.get("full_ids", None) # (seq_len,)
+        # if full_ids is None:
+        #     raise ValueError("You should pass the generated_ids tensor")
+        
+        pred_results = kwargs.get("pred_results", None)
+        if pred_results is None:
+            pred_results = self.wrapper.predict(inputs=inputs,
+                                            return_logits=False,
+                                            **kwargs,
+                                            )
+        full_ids = pred_results["full_ids"]
         
         # Define the indices of the answers tokens and visual tokens 
         t_start = inputs["input_ids"].shape[1]
@@ -209,7 +218,7 @@ class RolloutExplainer(BaseExplainer):
         final_image_mask = is_image_mask & prompt_mask
 
 
-        token_attribution = t_rollout[t_start:t_end, final_text_mask]
+        token_attribution = t_rollout[t_start:t_end, prompt_mask]
 
         if average:
             # Average across the generated sentence to get one score per prompt word
