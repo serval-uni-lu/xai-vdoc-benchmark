@@ -21,22 +21,6 @@ def score_output(model: BaseVLMWrapper,
                             pixel_values,
                             output_ids,
                             )
-    
-    # FIX: Handle variable length positions manually per batch item
-    # batch_scores = []
-    # for b in range(probs_pred.shape[0]):
-    #     # Select the specific tokens for this batch item
-    #     p = positions[b].to(probs_pred.device)
-    #     if len(p) == 0:
-    #         batch_scores.append(torch.tensor(0.0, device=probs_pred.device))
-    #     else:
-    #         # probs_pred[b] is (Seq_Len,)
-    #         # We gather the specific keyword probabilities
-    #         s = probs_pred[b, p].sum() / len(p)
-    #         batch_scores.append(s)
-            
-    # scores = torch.stack(batch_scores).cpu().float()
-
     # Fix
     batch_size = probs_pred.shape[0]
     device = probs_pred.device
@@ -49,7 +33,11 @@ def score_output(model: BaseVLMWrapper,
         p = positions[b].to(device)
         if len(p) > 0:
             # Gather and mean directly on the GPU, much faster than appending to a list
-            batch_scores[b] = probs_pred[b, p].sum()
+            # batch_scores[b] = probs_pred[b, p].sum()
+            log_prob_sum = probs_pred[b, p].sum()
+
+            # 2. Convert back to raw probability space [0, 1] for Game Theory Math!
+            batch_scores[b] = torch.exp(log_prob_sum)
             
     scores = batch_scores.cpu()
 
@@ -64,9 +52,9 @@ def pred_probs(model: BaseVLMWrapper,
 
     device = model.device
     
-    attention_mask = torch.ones_like(new_input_ids).to(device)
-    # pad_token_id = model.processor.tokenizer.pad_token_id if model.processor.tokenizer.pad_token_id is not None else 0
-    # attention_mask = (new_input_ids != pad_token_id).long().to(device)
+    # attention_mask = torch.ones_like(new_input_ids).to(device)
+    pad_token_id = model.processor.tokenizer.pad_token_id if model.processor.tokenizer.pad_token_id is not None else 0
+    attention_mask = (new_input_ids != pad_token_id).long().to(device)
 
     other_kwargs = {k: v \
                     for k, v in inputs.items() \
@@ -89,6 +77,12 @@ def pred_probs(model: BaseVLMWrapper,
 
     returned_logits = returned_logits.gather(dim=2, index=output_ids.unsqueeze(-1)).squeeze(-1) # (batch_size, selected_tokens)
     return returned_logits
+
+
+import torch
+import torch.nn.functional as F
+from typing import Dict, Any, List, Optional
+
 
 
 def get_most_important_tokens_pixel(model: BaseVLMWrapper,

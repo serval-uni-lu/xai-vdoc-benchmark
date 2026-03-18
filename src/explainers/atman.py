@@ -105,6 +105,7 @@ class AtManExplainer(BaseExplainer):
     def get_raw_attributions(self, 
                              image,
                              text: str,
+                             target_indices: Optional[int | List[int]],
                              **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         
         inputs = self.wrapper.get_inputs(image, text)

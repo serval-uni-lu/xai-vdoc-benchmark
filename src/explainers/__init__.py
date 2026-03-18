@@ -5,3 +5,4 @@ from src.explainers.lxt import LXTExplainer
 from src.explainers.random import RandomExplainer
 from src.explainers.rollout import RolloutExplainer
 from src.explainers.llava_cam import LLaVACAMExplainer
+from src.explainers.atman import AtManExplainer

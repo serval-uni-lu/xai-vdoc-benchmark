@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from typing import Sequence, Dict, Optional, Any, List
 
 from src.models import BaseVLMWrapper
-from .base import BaseMetric
-from .faithfulness_utils import (score_output, pred_probs, get_most_important_tokens_multimodal,
+from src.metrics.base import BaseMetric
+from src.metrics.faithfulness_utils import (score_output, pred_probs, get_most_important_tokens_multimodal,
                                  get_most_important_tokens_pixel,
                                  get_most_important_tokens_token
                                  )
@@ -20,6 +20,7 @@ class FaithfulnessMetric(BaseMetric):
                  perturbation_steps: List[float], 
                  pad_token_id: int, 
                  special_token_ids: List[int],
+                 semantic_mask: Optional[Tensor] = None,
                  mask_value: float = 0.0,
                  filter_keywords: bool = False):
         """
@@ -36,6 +37,7 @@ class FaithfulnessMetric(BaseMetric):
         self.special_token_ids = special_token_ids or []
         self.mask_value = mask_value
         self.filter_keywords = filter_keywords
+        self.semantic_mask = semantic_mask
 
     def compute(self, wrapper: BaseVLMWrapper,
                 sample: Dict[str, Any],
@@ -83,6 +85,7 @@ class FaithfulnessMetric(BaseMetric):
                 perturbation_steps=self.steps,
                 pad_token_id=self.pad_token_id,
                 special_token_ids=self.special_token_ids,
+                semantic_mask=self.semantic_mask,
                 filter_keywords=self.filter_keywords
             )
             
@@ -102,7 +105,8 @@ class FaithfulnessMetric(BaseMetric):
                 pixel_attribution=pixel_attr,
                 perturbation_steps=self.steps, 
                 pad_token_id=self.pad_token_id,
-                special_token_ids=self.special_token_ids, 
+                special_token_ids=self.special_token_ids,
+                semantic_mask=self.semantic_mask,
                 mask_value=self.mask_value,
                 filter_keywords=self.filter_keywords
             )
@@ -119,7 +123,7 @@ class FaithfulnessMetric(BaseMetric):
         """
         formatted = {}
         for key, val in raw_metrics.items():
-            if "norm_auc" not in key:
+            if "auc" not in key:
                 continue
 
             new_key = f"{prefix}_{key}"
@@ -226,17 +230,17 @@ def eval_image_perturbation_batch(
     
     # If we have a blur baseline, we use its score for normalization (0.0 point)
     # If not, we use the score of a fully masked image (calculated later or assumed)
-    if blur_baseline is not None:
-        blur_scores = score_output(model,
-                                   inputs=inputs,
-                                   input_ids=input_ids,
-                                   pixel_values=blur_baseline,
-                                   output_ids=target_ids,
-                                   positions=target_positions,
-                                   ).numpy() # (B,)
-    else:
-        # Temporary fallback if no blur image provided: assume 0.0 or calculate on fully masked
-        blur_scores = np.zeros_like(baseline_scores) # Placeholder
+    # if blur_baseline is not None:
+    blur_scores = score_output(model,
+                                inputs=inputs,
+                                input_ids=input_ids,
+                                pixel_values=blur_baseline,
+                                output_ids=target_ids,
+                                positions=target_positions,
+                                ).numpy() # (B,)
+    # else:
+    #     # Temporary fallback if no blur image provided: assume 0.0 or calculate on fully masked
+    #     blur_scores = np.zeros_like(baseline_scores) # Placeholder
 
     # 4. Perturbation Loop
     S = len(perturbation_steps)
@@ -391,6 +395,7 @@ def eval_token_perturbation_batch(
     perturbation_steps: Sequence[float],
     pad_token_id: int,               # The token ID used to mask text (e.g. tokenizer.pad_token_id)
     special_token_ids: List[int],
+    semantic_mask: Optional[Tensor] = None,
     descending: bool = True,         # True = Deletion (remove important first), False = (remove important last)
     filter_keywords: bool = True,
     # pixel_values are passed inside inputs or separately depending on your wrapper
@@ -409,8 +414,12 @@ def eval_token_perturbation_batch(
     B, seq_len = input_ids.shape
     
     # --- Identify "Valid" Text Tokens ---
-    # Create a boolean mask: True = Text Token, False = Visual/Special Token
-    valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    # Start by only allowing perturbation where semantic_mask is True
+    if semantic_mask is not None:
+        valid_mask = semantic_mask.to(device).clone()
+    else:
+        # Fallback if no mask is provided: assume all tokens are valid
+        valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
     
     if special_token_ids is not None:
         for skip_id in special_token_ids:
@@ -589,7 +598,8 @@ def eval_multimodal_synergy_batch(
     perturbation_steps: Sequence[float],
     pad_token_id: int,              # Text Baseline
     special_token_ids: List[int],   # For filtering text tokens
-    blur_baseline: Optional[Tensor] = None,          # Image Baseline (same shape as pixel_values)
+    semantic_mask: Optional[Tensor] = None,
+    blur_baseline: Optional[Tensor] = None,  # Image Baseline (same shape as pixel_values)
     mask_value: float = 0.0,
     descending: bool = True,        # True = "Insertion" style (Start from 0, add Important)
     filter_keywords: bool = True,
@@ -638,9 +648,12 @@ def eval_multimodal_synergy_batch(
         raise ValueError("pixel_attribution must be (B, H, W) or (B,num_patches).")
 
     # --- 2. Setup Text Inputs ---
-    # --- Identify "Valid" Text Tokens ---
-    # Create a boolean mask: True = Text Token, False = Visual/Special Token
-    valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    # Start by only allowing perturbation where semantic_mask is True
+    if semantic_mask is not None:
+        valid_mask = semantic_mask.to(device).clone()
+    else:
+        # Fallback if no mask is provided: assume all tokens are valid
+        valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
     
     if special_token_ids is not None:
         for skip_id in special_token_ids:

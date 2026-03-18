@@ -147,7 +147,7 @@ class LLaVACAMExplainer(BaseExplainer):
         smooth_token_cam /= self.num_samples
         smooth_pixel_cam /= self.num_samples
 
-        return smooth_token_cam, smooth_pixel_cam
+        return smooth_token_cam.float(), smooth_pixel_cam.float()
 
     def llava_cam(self,
             image,
