@@ -94,7 +94,7 @@ class LLaVACAMExplainer(BaseExplainer):
 
         # Grad-CAM requires a ReLU to keep only positive contributions
         cam = nn.functional.relu(cam)
-        
+
         # # Normalize to [0, 1]
         # if cam.max() > 0:
         #     cam = cam / cam.max()
@@ -155,9 +155,7 @@ class LLaVACAMExplainer(BaseExplainer):
             **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generates raw attributions. 
-        Returns: Tuple of (Attributions, Feature_Maps) of shape (Batch, Seq_Len, Hidden_Dim).
         """
-
         inputs = self.wrapper.get_inputs(image, text)
         
         pred_results = kwargs.get("pred_results", None)
@@ -173,29 +171,34 @@ class LLaVACAMExplainer(BaseExplainer):
         t_end = full_ids.shape[-1]
         gen_len = t_end - t_start
                 
-        inputs["input_ids"] = full_ids.clone().unsqueeze(0)  # (batch, seq_len)
+        inputs["input_ids"] = full_ids.clone()  # (batch, seq_len)
+        if inputs["input_ids"].ndim == 1:
+            inputs["input_ids"] = inputs["input_ids"].unsqueeze(0)
+            
         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
 
-        
+        # --- ROBUST IMAGE TOKEN IDENTIFICATION ---
+        # InternVL uses <IMG_CONTEXT>, LLaVA uses <image>, Qwen uses <|image_pad|>
         image_token_id = self.wrapper.model.config.image_token_id
+
         # Boolean Masks (flattened to 1D)
-        full_ids_1d = full_ids.squeeze()
-        prompt_mask = torch.arange(full_ids_1d.size(-1),
-                                   device=full_ids_1d.device) < t_start
+        full_ids_1d = inputs["input_ids"].squeeze()
+        prompt_mask = torch.arange(full_ids_1d.size(-1), device=full_ids_1d.device) < t_start
+        
         is_image_mask = (full_ids_1d == image_token_id)
         is_text_mask = ~is_image_mask
 
-        final_text_mask = is_text_mask & prompt_mask
+        final_text_mask = prompt_mask
         final_image_mask = is_image_mask & prompt_mask
-
         
         with self.manage_explainability_state():
-            outputs = self.wrapper.model(**inputs)
+            outputs = self.wrapper.model(
+                **inputs, 
+                use_cache=False # Crucial for backward hooks
+            )
             logits = outputs.logits[:, t_start-1:t_end-1, :] # (1, num_ans_tokens, vocab_size)
 
-            new_ids = full_ids[t_start:t_end] #.unsqueeze(0).unsqueeze(-1) # (1, num_ans_tokens, 1)
-            new_ids = new_ids.unsqueeze(0).unsqueeze(-1)
-            
+            new_ids = full_ids[t_start:t_end].unsqueeze(0).unsqueeze(-1)
             target_logits = logits.gather(dim=-1, index=new_ids).squeeze(-1) # (1, num_ans_tokens)
 
             if self.token_wise:
@@ -204,16 +207,14 @@ class LLaVACAMExplainer(BaseExplainer):
 
                 # Iterate on each generated token's logit
                 for i in range(gen_len):
-                    # Backward Pass
                     self.wrapper.model.zero_grad()
                     target_logits[:, i].backward(retain_graph=True)
 
-                    # Safety check: Did the hook catch the gradients?
                     if self.gradients is None:
-                        raise RuntimeError(f"Gradients were dropped at iteration {i}")
+                        raise RuntimeError(f"Gradients were dropped at iteration {i}. Check layer name: {self.target_layer_name}")
 
-                    # Compute CAM for each word
-                    tok_attr = self.compute_cam(prompt_mask)
+                    # Compute CAM for text and image
+                    tok_attr = self.compute_cam(final_text_mask)
                     pix_attr = self.compute_cam(final_image_mask)
 
                     self.gradients = None
@@ -221,24 +222,18 @@ class LLaVACAMExplainer(BaseExplainer):
                     token_attributions.append(tok_attr)
                     pixel_attributions.append(pix_attr)
                 
-                # Stack the list of 1D tensors into a 2D tensor
                 token_attribution = torch.stack(token_attributions, dim=0) # [gen_len, num_text_tokens]
                 pixel_attribution = torch.stack(pixel_attributions, dim=0) # [gen_len, num_image_tokens]
-                
 
             else:
-                # Generate 1 attribution for the whole sequence
                 answer_score = target_logits.sum()
-
-                # Backward Pass
                 self.wrapper.model.zero_grad()
                 answer_score.backward(retain_graph=True)
 
-                # Compute text and image attributions
                 token_attribution = self.compute_cam(final_text_mask).unsqueeze(0)
-                pixel_attribution = self.compute_cam(final_image_mask).unsqueeze(0)               
+                pixel_attribution = self.compute_cam(final_image_mask).unsqueeze(0)
 
-        pixel_attribution = align_llm_visuals_to_pixels(pixel_attribution, inputs)
+        pixel_attribution = align_llm_visuals_to_pixels(pixel_attribution, inputs, config=self.wrapper.model.config)
+
 
         return token_attribution, pixel_attribution
-    

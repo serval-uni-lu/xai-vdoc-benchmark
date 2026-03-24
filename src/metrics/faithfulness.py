@@ -1,3 +1,4 @@
+
 import time
 
 import numpy as np
@@ -8,7 +9,8 @@ from typing import Sequence, Dict, Optional, Any, List
 
 from src.models import BaseVLMWrapper
 from src.metrics.base import BaseMetric
-from src.metrics.faithfulness_utils import (score_output, pred_probs, get_most_important_tokens_multimodal,
+from src.metrics.faithfulness_utils import (score_output,
+                                get_most_important_tokens_multimodal,
                                  get_most_important_tokens_pixel,
                                  get_most_important_tokens_token
                                  )
@@ -38,6 +40,9 @@ class FaithfulnessMetric(BaseMetric):
         self.mask_value = mask_value
         self.filter_keywords = filter_keywords
         self.semantic_mask = semantic_mask
+    
+    def set_semantic_mask(self, new_mask):
+        self.semantic_mask = new_mask
 
     def compute(self, wrapper: BaseVLMWrapper,
                 sample: Dict[str, Any],
@@ -161,10 +166,30 @@ def eval_image_perturbation_batch(
     Adapts the logic of 'metric()' and 'score_output()' into a batched efficient format.
     """
     device = model.device
-    pixel_values = inputs["pixel_values"].unsqueeze(0).to(device)
+    pixel_values = inputs["pixel_values"].to(device)
     pixel_attribution = pixel_attribution.to(device)
     input_ids = inputs["input_ids"].to(device)
     target_ids = target_ids.to(device)
+
+    # --- SAFELY ADD BATCH DIMENSION BASED ON ARCHITECTURE ---
+    model_type = getattr(model.model.config, "model_type", "").lower()
+    
+    if "internvl" in model_type:
+        # InternVL expects 5D: (Batch, num_tiles, C, H, W)
+        if pixel_values.ndim == 4:
+            pixel_values = pixel_values.unsqueeze(0)
+            
+    elif "qwen" in model_type:
+        # QwenVL expects 3D: (Batch, num_patches, patch_dim)
+        if pixel_values.ndim == 2:
+            pixel_values = pixel_values.unsqueeze(0)
+            
+    else:
+        # Fallback for Standard VLMs like LLaVA 
+        # LLaVA expects 4D: (Batch, C, H, W)
+        # Processors usually return 4D, so we ONLY unsqueeze if it's oddly 3D
+        if pixel_values.ndim == 3: 
+            pixel_values = pixel_values.unsqueeze(0)
 
 
     # ---------- normalize shapes & define feature/position dims ----------
@@ -172,16 +197,19 @@ def eval_image_perturbation_batch(
     origin_shape = pixel_values.shape
 
     # Setup Baselines & Flattening
-    if ndim == 4: # (B, C, H, W)
+    if ndim == 5: # INTERNVL: (B, num_tiles, C, H, W)
+        B, num_tiles, C, H, W = origin_shape
+        num_pixels = num_tiles * H * W
+        feat = pixel_values.reshape(B, C, num_pixels)
+    elif ndim == 4: # STANDARD: (B, C, H, W)
         B, C, H, W = origin_shape
         num_pixels = H * W
-        feat = pixel_values.reshape(B, C, num_pixels) # (B, C, H*W)
-    elif ndim == 3: # (B, num_patches, patch_dim)
+        feat = pixel_values.reshape(B, C, num_pixels) 
+    elif ndim == 3: # QWENVL: (B, num_patches, patch_dim)
         B, num_pixels, patch_dim = origin_shape
-        # feat = pixel_values.transpose(1, 2) # (B, patch_dim, num_patches)
-        feat = pixel_values.reshape(B, patch_dim, num_pixels) # (B, patch_dim, num_patches)
+        feat = pixel_values.reshape(B, patch_dim, num_pixels) 
     else:
-        raise ValueError("pixel_values shape must be (B, C, H, W) or (B, num_patches, patch_dim).")
+        raise ValueError("pixel_values shape must be 3D, 4D, or 5D.")
 
     
     # Baseline image (blur)
@@ -190,12 +218,15 @@ def eval_image_perturbation_batch(
     feat_baseline = blur_baseline.clone().reshape(feat.shape)
 
 
-    if pixel_attribution.ndim == 3: # (B, H, W)
-        sal_flat = pixel_attribution.reshape(B, -1) # (B, num_pixels)
-    elif pixel_attribution.ndim == 2: # (B, num_patches)
+    # Flatten Attribution Map
+    if pixel_attribution.ndim == 4: # INTERNVL: (B, num_tiles, H, W)
+        sal_flat = pixel_attribution.reshape(B, -1) 
+    elif pixel_attribution.ndim == 3: # STANDARD: (B, H, W)
+        sal_flat = pixel_attribution.reshape(B, -1) 
+    elif pixel_attribution.ndim == 2: # QWENVL: (B, num_patches)
         sal_flat = pixel_attribution
     else:
-        raise ValueError("pixel_attribution must be (B, H, W) or (B,num_patches).")
+        raise ValueError("pixel_attribution must be 2D, 3D, or 4D.")
 
     
     # 1. Prepare Target Positions (The "visual keywords" logic)
@@ -292,13 +323,15 @@ def eval_image_perturbation_batch(
                         ) # (B, num_feats, k)
         
         # Reshape back to original pixel_values
-        if ndim == 4:
+        if ndim == 5:
+            B, num_tiles, C, H, W = origin_shape
+            del_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
+        elif ndim == 4:
             B, C, H, W = origin_shape
-            del_pixels = feat_pert.reshape(B, C, H, W)       # (B, C, H, W)
+            del_pixels = feat_pert.reshape(B, C, H, W)       
         elif ndim == 3:
-            # del_pixels = feat_pert.transpose(1, 2)        # (B, P, D)
             B, num_pixels, patch_dim = origin_shape
-            del_pixels = feat_pert.reshape(B, num_pixels, patch_dim)        # (B, P, D)
+            del_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
         else:
             raise ValueError("Wrong dim for the pixel values !")
 
@@ -322,13 +355,15 @@ def eval_image_perturbation_batch(
                         ) # (B, num_feats, k)
         
         # Reshape back to original pixel_values
-        if ndim == 4:
+        if ndim == 5:
+            B, num_tiles, C, H, W = origin_shape
+            ins_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
+        elif ndim == 4:
             B, C, H, W = origin_shape
-            ins_pixels = feat_pert.view(B, C, H, W)       # (B, C, H, W)
+            ins_pixels = feat_pert.reshape(B, C, H, W)       
         elif ndim == 3:
             B, num_pixels, patch_dim = origin_shape
-            #ins_pixels = feat_pert.transpose(1, 2)        # (B, P, D)
-            ins_pixels = feat_pert.reshape(B, num_pixels, patch_dim)        # (B, P, D)
+            ins_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
         else:
             raise ValueError("Wrong dim for the pixel values !")
         
@@ -611,27 +646,51 @@ def eval_multimodal_synergy_batch(
     This is effectively a 'Double Insertion' metric.
     """
     device = model.device
-    pixel_values = inputs["pixel_values"].unsqueeze(0).to(device)
+    pixel_values = inputs["pixel_values"].to(device)
     input_ids = inputs["input_ids"].to(device)
     pixel_attribution = pixel_attribution.to(device)
     token_attribution = token_attribution.to(device)
     target_ids = target_ids.to(device)
+
+    # --- SAFELY ADD BATCH DIMENSION BASED ON ARCHITECTURE ---
+    model_type = getattr(model.model.config, "model_type", "").lower()
+    
+    if "internvl" in model_type:
+        # InternVL expects 5D: (Batch, num_tiles, C, H, W)
+        if pixel_values.ndim == 4:
+            pixel_values = pixel_values.unsqueeze(0)
+            
+    elif "qwen" in model_type:
+        # QwenVL expects 3D: (Batch, num_patches, patch_dim)
+        if pixel_values.ndim == 2:
+            pixel_values = pixel_values.unsqueeze(0)
+            
+    else:
+        # Fallback for Standard VLMs like LLaVA 
+        # LLaVA expects 4D: (Batch, C, H, W)
+        # Processors usually return 4D, so we ONLY unsqueeze if it's oddly 3D
+        if pixel_values.ndim == 3: 
+            pixel_values = pixel_values.unsqueeze(0)
+
 
     # ---------- normalize shapes & define feature/position dims for Image Inputs ----------
     ndim = pixel_values.ndim
     origin_shape = pixel_values.shape
 
     # Setup Baselines & Flattening
-    if ndim == 4: # (B, C, H, W)
+    if ndim == 5: # INTERNVL: (B, num_tiles, C, H, W)
+        B, num_tiles, C, H, W = origin_shape
+        num_pixels = num_tiles * H * W
+        feat = pixel_values.reshape(B, C, num_pixels)
+    elif ndim == 4: # STANDARD: (B, C, H, W)
         B, C, H, W = origin_shape
         num_pixels = H * W
-        feat = pixel_values.reshape(B, C, num_pixels) # (B, C, H*W)
-    elif ndim == 3: # (B, num_patches, patch_dim)
+        feat = pixel_values.reshape(B, C, num_pixels) 
+    elif ndim == 3: # QWENVL: (B, num_patches, patch_dim)
         B, num_pixels, patch_dim = origin_shape
-        # feat = pixel_values.transpose(1, 2) # (B, patch_dim, num_patches)
-        feat = pixel_values.reshape(B, patch_dim, num_pixels) # (B, patch_dim, num_patches)
+        feat = pixel_values.reshape(B, patch_dim, num_pixels) 
     else:
-        raise ValueError("pixel_values shape must be (B, C, H, W) or (B, num_patches, patch_dim).")
+        raise ValueError("pixel_values shape must be 3D, 4D, or 5D.")
     
     num_img_feat = feat.shape[1] # C or patch_dim
     
@@ -640,12 +699,15 @@ def eval_multimodal_synergy_batch(
         blur_baseline = torch.full_like(pixel_values, mask_value).to(device)
     feat_baseline = blur_baseline.clone().reshape(feat.shape)
     
-    if pixel_attribution.ndim == 3: # (B, H, W)
-        sal_flat_img = pixel_attribution.reshape(B, -1) # (B, num_pixels)
-    elif pixel_attribution.ndim == 2: # (B, num_patches)
+    # Flatten Attribution Map
+    if pixel_attribution.ndim == 4: # INTERNVL: (B, num_tiles, H, W)
+        sal_flat_img = pixel_attribution.reshape(B, -1) 
+    elif pixel_attribution.ndim == 3: # STANDARD: (B, H, W)
+        sal_flat_img = pixel_attribution.reshape(B, -1) 
+    elif pixel_attribution.ndim == 2: # QWENVL: (B, num_patches)
         sal_flat_img = pixel_attribution
     else:
-        raise ValueError("pixel_attribution must be (B, H, W) or (B,num_patches).")
+        raise ValueError("pixel_attribution must be 2D, 3D, or 4D.")
 
     # --- 2. Setup Text Inputs ---
     # Start by only allowing perturbation where semantic_mask is True
@@ -672,11 +734,7 @@ def eval_multimodal_synergy_batch(
     baseline_input_ids = input_ids.clone()
     baseline_input_ids[valid_mask] = pad_token_id
 
-    
-
-    # --- 3. Baselines & Targets ---
-    # We need a "Global Baseline" (0, 0) where BOTH are masked
-    
+    # --- 3. Baselines & Targets ---   
     
     # Keyword filtering (Optional - calculate on Joint Original)
     if filter_keywords:
@@ -711,27 +769,6 @@ def eval_multimodal_synergy_batch(
                                 output_ids=target_ids,
                                 positions=target_positions,
                                 ).numpy() # (B,)
-    
-    # # Image=Blur, Text=Full
-    # token_only_scores = score_output(model,
-    #                             inputs=inputs,
-    #                             input_ids=input_ids,
-    #                             pixel_values=blur_baseline,
-    #                             output_ids=target_ids,
-    #                             positions=target_positions,
-    #                             ).numpy() # (B,)
-    
-    # # Image=Full, Text=Pad
-    # pixel_only_scores = score_output(model,
-    #                             inputs=inputs,
-    #                             input_ids=baseline_input_ids,
-    #                             pixel_values=pixel_values,
-    #                             output_ids=target_ids,
-    #                             positions=target_positions,
-    #                             ).numpy() # (B,)
-    
-    # normalizer_ins = full_scores - token_only_scores - pixel_only_scores + zeros_scores
-    # normalizer_del = - normalizer_ins
 
     normalizer_ins = full_scores - zeros_scores
     normalizer_del = full_scores - zeros_scores
@@ -781,13 +818,15 @@ def eval_multimodal_synergy_batch(
         feat_pixels.scatter_(dim=2, index=top_img_idx_exp, src=pixels_orig)
 
         # Reshape back to original pixel_values
-        if ndim == 4:
+        if ndim == 5:
+            B, num_tiles, C, H, W = origin_shape
+            del_pixels = feat_pixels.reshape(B, num_tiles, C, H, W)
+        elif ndim == 4:
             B, C, H, W = origin_shape
-            del_pixels = feat_pixels.reshape(B, C, H, W)       # (B, C, H, W)
+            del_pixels = feat_pixels.reshape(B, C, H, W)       
         elif ndim == 3:
-            # del_pixels = feat_pixels.transpose(1, 2)        # (B, P, D)
             B, num_pixels, patch_dim = origin_shape
-            del_pixels = feat_pixels.reshape(B, num_pixels, patch_dim)        # (B, P, D)
+            del_pixels = feat_pixels.reshape(B, num_pixels, patch_dim)
         else:
             raise ValueError("Wrong dim for the pixel values !")
         
@@ -816,12 +855,15 @@ def eval_multimodal_synergy_batch(
                         ) # (B, num_feats, k)
         
         # Reshape back to original pixel_values
-        if ndim == 4:
+        if ndim == 5:
+            B, num_tiles, C, H, W = origin_shape
+            ins_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
+        elif ndim == 4:
             B, C, H, W = origin_shape
-            ins_pixels = feat_pert.view(B, C, H, W)       # (B, C, H, W)
+            ins_pixels = feat_pert.view(B, C, H, W)       
         elif ndim == 3:
             B, num_pixels, patch_dim = origin_shape
-            ins_pixels = feat_pert.reshape(B, num_pixels, patch_dim)        # (B, P, D)
+            ins_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
         else:
             raise ValueError("Wrong dim for the pixel values !")
 
@@ -871,7 +913,7 @@ def eval_multimodal_synergy_batch(
         del_synergy = del_p_joint - (del_p_img_only + del_p_txt_only - full_scores)
         del_synergy_curve[i] = del_synergy
         del_norm_synergy_curve[i] = del_p_joint - (del_p_img_only + del_p_txt_only - zeros_scores)
-        del_norm_synergy_curve[i] /= normalizer_del
+        del_norm_synergy_curve[i] /= (normalizer_del + 1e-9)
         del_norm_synergy_curve[i] += 1
 
         # --- Insertion Scoring ---
@@ -908,7 +950,7 @@ def eval_multimodal_synergy_batch(
         ins_synergy = ins_p_joint - (ins_p_img_only + ins_p_txt_only - zeros_scores)
         # ins_synergy = ins_p_joint - (ins_p_img_only + ins_p_txt_only)
         ins_synergy_curve[i] = ins_synergy
-        ins_norm_synergy_curve[i] = ins_synergy / normalizer_ins
+        ins_norm_synergy_curve[i] = ins_synergy / (normalizer_ins + 1e-9)
 
     del_norm_syn_auc = np.trapezoid(del_norm_synergy_curve,
                                 x=perturbation_steps, axis=0)

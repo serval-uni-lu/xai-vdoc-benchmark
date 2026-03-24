@@ -224,7 +224,8 @@ class AtManExplainer(BaseExplainer):
         token_attribution = attribution_matrix[:, prompt_mask]
         raw_pixel_attribution = attribution_matrix[:, final_image_mask]
         
-        pixel_attribution = align_llm_visuals_to_pixels(raw_pixel_attribution, inputs)
+        pixel_attribution = align_llm_visuals_to_pixels(raw_pixel_attribution, inputs,
+                                                        config=self.wrapper.model.config)
 
         return token_attribution.detach().cpu(), pixel_attribution.detach().cpu()
     

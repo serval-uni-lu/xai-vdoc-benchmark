@@ -1,6 +1,6 @@
 import importlib
 from types import ModuleType
-from typing import Any, Dict, Callable
+from typing import Any, Dict, Callable, List
 from functools import partial
 
 import torch
@@ -15,7 +15,7 @@ from lxt.efficient.patches import rms_norm_forward, gated_mlp_forward, dropout_f
 
 from src.models.base import BaseVLMWrapper
 
-class QwenVL_Wrapper(BaseVLMWrapper):
+class QwenVLWrapper(BaseVLMWrapper):
     def __init__(self, model: nn.Module, processor: Any):
         super().__init__(model, processor)
         self._get_original_attention_forward()
@@ -66,10 +66,11 @@ class QwenVL_Wrapper(BaseVLMWrapper):
     def get_root_module(self) -> ModuleType:
         return importlib.import_module("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl")
 
-    def get_patch_map(self) -> Dict[str, Any]:
+    def get_patch_map(self) -> Dict[Any, Any]:
         attnLRP = {
                 Qwen2_5_VLMLP: partial(patch_method, gated_mlp_forward),
                 Qwen2RMSNorm: partial(patch_method, rms_norm_forward),
+                # Qwen2_5_VLRMSNorm: partial(patch_method, rms_norm_forward),
                 Dropout: partial(patch_method, dropout_forward),
                 modeling_qwen2_5_vl: patch_attention,
             }
@@ -137,6 +138,18 @@ class QwenVL_Wrapper(BaseVLMWrapper):
     @property
     def llm_module_name(self) -> str:
         return "Qwen2_5_VLAttention"
+    
+    @property
+    def special_token_ids(self) -> List:
+        tok = self.processor.tokenizer
+        special_token_ids = [
+            tok.convert_tokens_to_ids("<|image_pad|>"),
+            tok.convert_tokens_to_ids("<|vision_start|>"),
+            tok.convert_tokens_to_ids("<|vision_end|>"),
+            tok.convert_tokens_to_ids("<|im_start|>"),
+            tok.convert_tokens_to_ids("<|im_end|>")
+            ]
+        return special_token_ids
 
 
 def patch_vision_forward(

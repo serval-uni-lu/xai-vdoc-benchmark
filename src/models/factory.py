@@ -3,21 +3,18 @@ from transformers import (
     AutoConfig, 
     AutoProcessor, 
     AutoModelForCausalLM,
+    AutoModelForImageTextToText,
     LlavaForConditionalGeneration,
-    # Qwen2_5_VLForConditionalGeneration # Import if strictly needed for type checking
+    Qwen2_5_VLForConditionalGeneration # Import if strictly needed for type checking
 )
-# Fallback import if Qwen is not installed
-try:
-    from transformers import Qwen2_5_VLForConditionalGeneration
-except ImportError:
-    Qwen2_5_VLForConditionalGeneration = None
 
-from src.models import BaseVLMWrapper, QwenVL_Wrapper
+from src.models import BaseVLMWrapper, QwenVLWrapper, InternVLWrapper, LlavaWrapper
 from .config import LoaderConfig
 
 class VLMType:
-    # LLAVA = "llava"
     QWEN2_5_VL = "qwen2_5_vl"
+    INTERNVL3_5 = "internvl"
+    LLAVA = "llava"
 
 def create_model_wrapper(
     model_id: str,
@@ -40,7 +37,7 @@ def create_model_wrapper(
         "attn_implementation": config.attn_implementation
     }
 
-    # 3. Load Processor (Generic)
+    # Load Processor (Generic)
     try:
         processor = AutoProcessor.from_pretrained(
             model_id, 
@@ -55,6 +52,12 @@ def create_model_wrapper(
         if vlm_type == VLMType.QWEN2_5_VL:
             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id,
                                                                     **load_kwargs)
+        elif vlm_type == VLMType.INTERNVL3_5:
+            model = AutoModelForImageTextToText.from_pretrained(model_id,
+                                                                **load_kwargs)
+        elif vlm_type == VLMType.LLAVA:
+            model = LlavaForConditionalGeneration.from_pretrained(model_id,
+                                                                **load_kwargs)
         else:
             model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
     except Exception as e:
@@ -64,14 +67,13 @@ def create_model_wrapper(
     
     # 5. Dispatch to Correct Wrapper
     if vlm_type == VLMType.QWEN2_5_VL:
-        return QwenVL_Wrapper(model, processor)
+        return QwenVLWrapper(model, processor)
     
-    # elif vlm_type == VLMType.LLAVA:
-    #     return LlavaWrapper(model, processor)
+    elif vlm_type == VLMType.INTERNVL3_5:
+        return InternVLWrapper(model, processor)
     
-    # elif vlm_type == VLMType.INTERNVL:
-    #     # InternVL usually works with LlavaWrapper logic or needs a subclass
-    #     return LlavaWrapper(model, processor)
+    elif vlm_type == VLMType.LLAVA:
+        return LlavaWrapper(model, processor)
 
     else:
         raise NotImplementedError(f"Wrapper for {vlm_type} is defined in Enum but not instantiated in factory.")

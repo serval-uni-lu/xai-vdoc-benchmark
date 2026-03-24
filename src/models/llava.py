@@ -1,0 +1,159 @@
+import importlib
+import math
+from types import ModuleType
+from typing import Any, Dict, Callable, List
+from functools import partial
+
+import torch
+import torch.nn as nn
+
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+import transformers.models.clip.modeling_clip as modeling_clip
+from lxt.efficient.patches import patch_method, patch_attention, layer_norm_forward
+from lxt.efficient.models.llama import attnLRP as llama_attnlrp
+
+from src.models.base import BaseVLMWrapper
+
+class LlavaWrapper(BaseVLMWrapper):
+    def __init__(self, model: nn.Module, processor: Any):
+        super().__init__(model, processor)
+        # self._get_original_attention_forward()
+    
+    def get_inputs(self, image, text) -> Dict[str, Any]:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": text},
+                ],
+            }
+        ]
+        # Preparation for inference
+        inputs = self.processor.apply_chat_template(
+            messages, return_dict=True,
+            tokenize=True, add_generation_prompt=True,
+            return_tensors="pt"
+        )
+
+        inputs = inputs.to(self.device)
+
+        return inputs
+    
+    @property
+    def vision_module_name(self) -> str:
+        return "CLIPAttention"
+    
+    @property
+    def llm_module_name(self) -> str:
+        return "LlamaAttention"
+    
+    @property
+    def special_token_ids(self) -> List:
+        tok = self.processor.tokenizer
+        special_token_ids = [
+            tok.convert_tokens_to_ids("<image>"),
+            tok.convert_tokens_to_ids("<s>"),
+            # tok.convert_tokens_to_ids("<|vision_start|>"),
+            # tok.convert_tokens_to_ids("<|vision_end|>"),
+            # tok.convert_tokens_to_ids("<|im_start|>"),
+            # tok.convert_tokens_to_ids("<|im_end|>")
+            ]
+        return special_token_ids
+    
+    def apply_patch(self):
+        pass
+
+    def embed_images(self, pixel_values: torch.Tensor,
+                    **kwargs) -> torch.Tensor:
+        
+        vision_feature_layer = kwargs.get("vision_feature_layer", None)
+        vision_feature_select_strategy = kwargs.get("vision_feature_select_strategy", None)
+
+        image_features = self.model.model.get_image_features(
+                pixel_values=pixel_values,
+                vision_feature_layer=vision_feature_layer,
+                vision_feature_select_strategy=vision_feature_select_strategy,
+                return_dict=True,)
+        return image_features
+
+    def embed_text(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model.get_input_embeddings()(input_ids)
+    
+    def merge_embeddings(self,
+                        text_embeds: torch.Tensor,
+                        image_embeds: torch.Tensor,
+                        input_ids: torch.Tensor,
+                        ) -> torch.Tensor:
+
+        image_embeds = torch.cat(image_embeds, dim=0).to(text_embeds.device, text_embeds.dtype)
+        special_image_mask = self.model.model.get_placeholder_mask(
+            input_ids, inputs_embeds=text_embeds, image_features=image_embeds
+        )
+        inputs_embeds = text_embeds.masked_scatter(special_image_mask, image_embeds)
+        return inputs_embeds
+    
+    def get_captum_forward(self, 
+                       text_embeds, 
+                       pixel_values, 
+                       kwargs_dict,
+                       return_full_sequence: bool = False,
+                       ): # <--- This catches attention_mask, image_grid_thw, etc.
+        
+        local_kwargs = kwargs_dict.copy()
+
+        if pixel_values is not None:
+            image_embeds = self.embed_images(pixel_values, **local_kwargs)
+        else:
+            raise ValueError("Need pixel_values tensor")
+        
+        input_ids = local_kwargs.get("input_ids", None)
+        if input_ids is None:
+            raise ValueError("input_ids tensor is required")
+    
+        # text_embeds = self.embed_text(input_ids)
+        inputs_embeds = self.merge_embeddings(text_embeds,
+                                                image_embeds,
+                                                input_ids
+                                                )
+        
+        local_kwargs["input_ids"] = None
+        
+        return self.forward(inputs_embeds=inputs_embeds,
+                            return_probs=True,
+                            return_full_sequence=return_full_sequence,
+                            **local_kwargs
+                            )
+    
+    def get_patch_map(self) -> Dict[Any, Any]:
+        attnLRP = {
+            nn.LayerNorm: partial(patch_method, layer_norm_forward),
+            modeling_clip: patch_attention,
+            }
+        attnLRP.update(llama_attnlrp)
+        return attnLRP
+    
+    def _get_original_attention_forward(self):
+        return super()._get_original_attention_forward()
+    
+    def get_root_module(self) -> ModuleType:
+        return importlib.import_module("transformers.models.llava.modeling_llava")
+    
+    def get_tam_config(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+                
+        special_ids={'img_id': [[29901, 29871], [29871, 13]],
+                     'prompt_id': [[29871, 13], [319,  1799]],
+                     'answer_id': [[319,  1799,  9047, 13566, 29901], -1]}
+
+        vision_shape = (24, 24)
+        
+        
+        return {
+            "vision_shape": vision_shape,
+            "special_ids": special_ids,
+        }
+    
+    
+    def remove_patch(self):
+        return super().remove_patch()
+    

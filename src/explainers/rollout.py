@@ -1,7 +1,10 @@
 import contextlib
+import math
 from typing import Tuple, Optional, List
+
 import torch
 import torch.nn.functional as F
+
 from src.models import BaseVLMWrapper
 from src.explainers import BaseExplainer
 from src.explainers.utils import align_llm_visuals_to_pixels
@@ -53,9 +56,13 @@ class RolloutExplainer(BaseExplainer):
                 return lambda grad: target_list.__setitem__(idx, grad)
 
             for i, chunk in enumerate(chunk_list):
-                if chunk.requires_grad:
-                    chunk.retain_grad()
-                    chunk.register_hook(create_hook(i, layer_grads))
+                if chunk is not None:
+                    if not chunk.requires_grad:
+                        print(f"[!] WARNING: Attention chunk {i} does not require grad!")
+                    else:
+                        chunk.retain_grad()
+                        chunk.register_hook(create_hook(i, layer_grads))
+            
             grads_list.append(layer_grads)
         else:
             # Detach and CPU offload to save VRAM
@@ -126,16 +133,29 @@ class RolloutExplainer(BaseExplainer):
 
         if gradients is not None and len(gradients) > 0:
             # GRADIENT ROLLOUT (Chefer et al. 2021)
-            stitched_grads = [stitch_chunks_to_matrix(layer) for layer in gradients]
-            # Gradients populate backwards, so we reverse them to align with attentions
-            stitched_grads.reverse() 
+            
+            stitched_grads = []
+            for layer_attns, layer_grads in zip(attentions, gradients):
+                # SAFELY HANDLE NONE GRADIENTS:
+                # If PyTorch skipped a frozen layer, replace None with zeros of the same shape
+                safe_grads = [
+                    g if g is not None else torch.zeros_like(a).to(device=self.device) 
+                    for a, g in zip(layer_attns, layer_grads)
+                ]
+                stitched_grads.append(stitch_chunks_to_matrix(safe_grads))
+            
+            # [!] DO NOT REVERSE stitched_grads! 
+            # The lists were appended during the forward pass, so they are already aligned!
 
             for attn, grad in zip(stitched_attns, stitched_grads):
-                grad_attn = attn*grad
+                grad_attn = attn * grad
                 grad_attn = torch.clamp(grad_attn, min=0.0) # ReLU
                 grad_attn = grad_attn.mean(dim=1).squeeze(0)
                 grad_attn = grad_attn + torch.eye(seq_len).to(grad_attn.device)
+                
+                # Optional: Re-normalize if needed by your specific Rollout variant
                 # grad_attn = F.normalize(grad_attn, p=1, dim=-1)
+                
                 rollout = torch.matmul(grad_attn, rollout)
         else:
             # STANDARD ROLLOUT (Abnar et al. 2020)
@@ -179,7 +199,8 @@ class RolloutExplainer(BaseExplainer):
         with self.manage_explainability_state():    
 
             if self.requires_grad: # GradientxRollout
-                outputs = self.model(**inputs)
+
+                outputs = self.model(**inputs, output_attentions=True)
                 logits = outputs.logits[:, t_start-1:t_end-1, :] # (1, num_ans_tokens, vocab_size)
 
                 new_ids = full_ids[t_start:t_end] #.unsqueeze(0).unsqueeze(-1) # (1, num_ans_tokens, 1)
@@ -189,7 +210,7 @@ class RolloutExplainer(BaseExplainer):
                 answer_score = target_logits.sum()
 
                 self.model.zero_grad()
-                answer_score.backward(retain_graph=True)
+                answer_score.backward(retain_graph=False)
                 
                 v_rollout = self._compute_rollout_math(self.vision_attentions,
                                                        self.vision_grads)
@@ -199,7 +220,7 @@ class RolloutExplainer(BaseExplainer):
                 t_rollout = t_rollout.detach().cpu()
             else: # Standard Rollout
                 with torch.no_grad():
-                    _ = self.model(**inputs)
+                    _ = self.model(**inputs, output_attentions=True)
                 v_rollout = self._compute_rollout_math(self.vision_attentions)
                 t_rollout = self._compute_rollout_math(self.llm_attentions)
 
@@ -229,46 +250,94 @@ class RolloutExplainer(BaseExplainer):
         # Slice the LLM attention (Shape: [Num_Generated_Tokens, Num_Image_Tokens])
         text_to_image_attn = t_rollout[t_start:t_end, final_image_mask]
     
+        model_type = self.wrapper.model.config.model_type.lower()
 
-        text_to_vit_attn = align_llm_visuals_to_pixels(text_to_image_attn, inputs)
-
-        # if pixel_values.ndim >= 3 and pixel_values.shape[-3] in [1, 3, 4]:
-        #     # Standard VLM and shape is (C, H, W) or (batch_size, C, H, W)
-        #     text_to_vit_attn = text_to_image_attn
-        #     num_pixels = v_rollout.shape[0]
+        if "internvl" in model_type:
+            pixel_values = inputs.get("pixel_values")
+            # Fuse and Upsample dynamically
+            pixel_attribution = self._fuse_and_upsample_internvl(
+                text_to_image_attn=text_to_image_attn,
+                v_rollout=v_rollout,
+                pixel_values=pixel_values,
+            )
         
-        # else:
-        #     # Shape is (grid_h*grid_w, patch_dim)
+        elif "qwen" in model_type:
+            text_to_vit_attn = align_llm_visuals_to_pixels(text_to_image_attn, inputs,
+                                                           config=self.wrapper.model.config)
+            
+            pixel_attribution = torch.matmul(text_to_vit_attn, v_rollout)
+        
+        elif "llava" in model_type:
+            # 1. Strip the CLS token from the ViT Rollout if it exists
+            # v_rollout goes from (577, 577) -> (576, 576)
+            if v_rollout.shape[-1] == text_to_image_attn.shape[-1] + 1:
+                v_rollout = v_rollout[1:, 1:]
+            
+            patch_attribution = torch.matmul(text_to_image_attn, v_rollout)
 
-        #     _, grid_h, grid_w = inputs['image_grid_thw'][0].cpu().numpy().tolist()
-        #     spatial_merge_size = 2
-        #     llm_grid_h = grid_h // spatial_merge_size
-        #     llm_grid_w = grid_w // spatial_merge_size
-        #     num_vit_tokens = grid_h * grid_w
+            pixel_attribution = align_llm_visuals_to_pixels(patch_attribution, inputs,
+                                                           config=self.wrapper.model.config)
 
-        #     # Reshape LLM attention to its 2D grid
-        #     # Shape: [Num_Generated_Tokens, 1, grid_h, grid_w]
-        #     llm_attn_2d = text_to_image_attn.reshape(-1, 1, llm_grid_h, llm_grid_w)
-
-        #     # Spatially upsample the grid to match the ViT's resolution!
-        #     # We use 'nearest' so the LLM's attention is evenly distributed to the 4 sub-patches
-        #     vit_attn_2d = torch.nn.functional.interpolate(
-        #         llm_attn_2d, 
-        #         scale_factor=spatial_merge_size, 
-        #         mode='nearest'
-        #     )
-
-        #     # Flatten back to 1D to match the ViT Rollout
-        #     text_to_vit_attn = vit_attn_2d.reshape(-1, num_vit_tokens)
-
-        # Fuse informations from visual matrices and visual_tokens matrices
-        # [gen_len, num_pixels] x [num_pixels, num_pixels] -> [gen_len, num_pixels]
-        pixel_attribution = torch.matmul(text_to_vit_attn, v_rollout)
-
+        else:
+            raise NotImplementedError(f"This model {model_type} is not yet implemented for Rollout !")
         
         if average:
             pixel_attribution = pixel_attribution.mean(dim=0)
 
-
+        self.clear_hooks()
         return token_attribution, pixel_attribution
 
+
+    def _fuse_and_upsample_internvl(self, text_to_image_attn, v_rollout, pixel_values):
+        """
+        Dedicated Rollout fusion strictly for InternVL.
+        InternVL compresses 1024 ViT patches (32x32) into 256 LLM tokens (16x16) per tile.
+        """
+        gen_len = text_to_image_attn.shape[0]
+        
+        # 1. Tile count is securely read from the ViT attention
+        num_tiles = v_rollout.shape[0]
+        
+        # 2. Strip the CLS token from ViT Rollout
+        # (num_tiles, 1025, 1025) -> (num_tiles, 1024, 1024)
+        if v_rollout.shape[1] == 1025:
+            v_rollout = v_rollout[:, 1:, 1:]
+            
+        # 3. Reshape LLM attention to the 16x16 latent grid
+        # text_to_image_attn is currently (gen_len, num_tiles * 256)
+        llm_attn_2d = text_to_image_attn.view(gen_len * num_tiles, 1, 16, 16)
+        
+        # 4. Upsample LLM attention to 32x32 to match the ViT patches!
+        llm_attn_vit_res = F.interpolate(
+            llm_attn_2d, size=(32, 32), mode='nearest'
+        )
+        
+        # 5. Prepare for Matrix Multiplication
+        # Flatten to (gen_len, num_tiles, 1024) -> transpose to (num_tiles, gen_len, 1024)
+        text_to_vit_attn = llm_attn_vit_res.view(gen_len, num_tiles, 1024).transpose(0, 1)
+        
+        # 6. Rollout Math: [num_tiles, gen_len, 1024] @ [num_tiles, 1024, 1024]
+        pixel_attribution_patch = torch.bmm(text_to_vit_attn, v_rollout)
+        
+        # Transpose back to [gen_len, num_tiles, 1024]
+        pixel_attribution_patch = pixel_attribution_patch.transpose(0, 1)
+        
+        # 7. Final Upsample to Raw Pixels (448x448)
+        # Safely extract target height and width
+        if pixel_values.ndim == 5:
+            target_h, target_w = pixel_values.shape[3], pixel_values.shape[4]
+        elif pixel_values.ndim == 4:
+            target_h, target_w = pixel_values.shape[2], pixel_values.shape[3]
+        else:
+            target_h, target_w = 448, 448 # Safe InternVL default
+            
+        pixel_attr_2d = pixel_attribution_patch.reshape(gen_len * num_tiles, 1, 32, 32)
+        
+        pixel_attr_upscaled = F.interpolate(
+            pixel_attr_2d, size=(target_h, target_w), mode='bilinear', align_corners=False
+        )
+        
+        # 8. Format output to exactly what the perturbation metric expects
+        # Shape: (gen_len, num_tiles, H, W)
+        return pixel_attr_upscaled.view(gen_len, num_tiles, target_h, target_w)
+    

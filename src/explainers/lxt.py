@@ -14,6 +14,7 @@ from src.models.factory import create_model_wrapper
 class LXTExplainer(BaseExplainer):
     def __init__(self,
                 model_wrapper: BaseVLMWrapper,
+                use_zennit = False,
                 token_wise = True,
                 ):
         # super().__init__(model_wrapper)
@@ -24,7 +25,7 @@ class LXTExplainer(BaseExplainer):
         # Check & Apply Patches (Idempotent)
         # This will update self.wrapper if a reload occurred
         self._ensure_patched(verbose=True,
-                            use_zennit=False,
+                            use_zennit=use_zennit,
                             )
 
         # Update parent with the potentially new wrapper
@@ -154,6 +155,7 @@ class LXTExplainer(BaseExplainer):
 
         pixel_values = inputs["pixel_values"].clone().detach()
         pixel_values.requires_grad_(True)
+        ndim = pixel_values.ndim
         
         kwargs_dict = {k: v for k, v in inputs.items() if k not in ['pixel_values']}
 
@@ -183,6 +185,8 @@ class LXTExplainer(BaseExplainer):
         token_attributions = []
         pixel_attributions = []
 
+        model_type = self.wrapper.model.config.model_type
+
         # 4. BACKWARD PASS ENGINE (Gradient * Activation)
         if not self.token_wise:
             # --- SENTENCE-LEVEL ---
@@ -193,7 +197,16 @@ class LXTExplainer(BaseExplainer):
             sentence_score.backward(retain_graph=True)
             
             # LRP Rule: Relevance = Gradient * Activation
-            rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+            if "qwen" in model_type:
+                # QwenVL (num_patches, patch_dim)
+                rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+            elif "internvl" in model_type:
+                rel_img = (pixel_values.grad * pixel_values).float().sum(-3).detach().cpu()
+            elif "llava" in model_type:
+                rel_img = (pixel_values.grad * pixel_values).float().sum(-3).sum(0).detach().cpu()
+            else:
+                raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
+            
             rel_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
             
             # Store
@@ -212,8 +225,18 @@ class LXTExplainer(BaseExplainer):
                 target_logits[0, idx].backward(retain_graph=True)
                 
                 # LRP Rule: Relevance = Gradient * Activation
-                rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+                if "qwen" in model_type:
+                    # QwenVL (num_patches, patch_dim)
+                    rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+                elif "internvl" in model_type:
+                    rel_img = (pixel_values.grad * pixel_values).float().sum(-3).detach().cpu()
+                elif "llava" in model_type:
+                    rel_img = (pixel_values.grad * pixel_values).float().sum(-3).sum(0).detach().cpu()
+                else:
+                    raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
+                # rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
                 rel_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
+
                 
                 token_attributions.append(rel_text)
                 pixel_attributions.append(rel_img)

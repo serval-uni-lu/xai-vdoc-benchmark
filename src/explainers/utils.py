@@ -114,15 +114,15 @@ class XAIVisualizer:
         _ = visualization.visualize_text(records)
 
     def plot_image_attributions(self, 
-                                img_attr: Tensor, 
+                                img_attr: torch.Tensor, 
                                 original_image: Image.Image, 
-                                target_ids: Tensor, 
-                                image_grid_thw: Optional[Tensor] = None):
+                                target_ids: torch.Tensor, 
+                                image_grid_thw: Optional[torch.Tensor] = None):
         """
         Visualizes image attributions dynamically, handling both flattened patches and 2D maps.
         
         Args:
-            img_attr: Shape (num_answer_tokens, num_patches) OR (num_answer_tokens, H, W)
+            img_attr: Shape (num_answer_tokens, num_patches) OR (num_answer_tokens, H, W) OR (num_answer_tokens, num_tiles, H, W)
             original_image: The raw PIL Image object.
             target_ids: Shape (1, num_answer_tokens)
             image_grid_thw: Optional. Shape (1, 3). Required if img_attr is flattened patches (like Qwen).
@@ -148,6 +148,13 @@ class XAIVisualizer:
             
         elif img_attr.dim() == 3: # Already (num_tokens, H, W)
             attrs_2d = img_attr
+
+        elif img_attr.dim() == 4: # InternVL tiles: (num_tokens, num_tiles, H, W)
+            # The last tile (-1) is the global thumbnail containing the full downsampled image.
+            # Using this allows us to perfectly map the attribution to the original PIL Image.
+            print(f"[*] Detected Tiled Attribution (num_tiles={img_attr.shape[1]}). Visualizing the global thumbnail.")
+            attrs_2d = img_attr[:, -1, :, :]
+
         else:
             raise ValueError(f"Unexpected img_attr shape: {img_attr.shape}")
 
@@ -167,7 +174,8 @@ class XAIVisualizer:
         print("IMAGE ATTRIBUTIONS")
         print("="*50)
         
-        cmap = self._get_cmap()
+        # Make sure you have this helper or replace with "coolwarm" / standard matplotlib colormap
+        cmap = self._get_cmap() if hasattr(self, '_get_cmap') else "coolwarm"
 
         for i in range(num_tokens):
             target_token_str = self.processor.decode([target_ids[0, i]])
@@ -187,8 +195,10 @@ class XAIVisualizer:
                 cmap=cmap,
             )
 
+
 def align_llm_visuals_to_pixels(pixel_attribution: Tensor,
-                                inputs: dict) -> Tensor:
+                                inputs: dict, config,
+                                ) -> Tensor:
     """
     Reshapes and interpolates LLM-level pixel attributions to match 
     the exact spatial footprint of the model's original pixel_values.
@@ -198,7 +208,10 @@ def align_llm_visuals_to_pixels(pixel_attribution: Tensor,
         inputs: The original Hugging Face inputs dictionary.
         
     Returns:
-        Tensor of shape [gen_len, target_num_pixels]
+        Tensor formatted specifically for the perturbation metrics:
+        - InternVL: [gen_len, num_tiles, H, W]
+        - Standard: [gen_len, H, W]
+        - QwenVL:   [gen_len, num_patches]
     """
     pixel_values = inputs.get("pixel_values")
     
@@ -207,55 +220,85 @@ def align_llm_visuals_to_pixels(pixel_attribution: Tensor,
         return pixel_attribution
         
     gen_len, num_llm_tokens = pixel_attribution.shape
+    ndim = pixel_values.ndim
+    model_type = config.model_type
     
     # ---------------------------------------------------------
-    # CASE A: Standard VLM (e.g., LLaVA, BLIP) 
-    # Shape is (C, H, W) or (Batch, C, H, W)
+    # CASE C: InternVL (5D AnyRes Tiling)
+    # Shape: (Batch, num_tiles, C, H, W)
     # ---------------------------------------------------------
-    if pixel_values.ndim >= 3 and pixel_values.shape[-3] in [1, 3, 4]:
-        target_h, target_w = pixel_values.shape[-2], pixel_values.shape[-1]
+    if "internvl" in model_type:
+        num_tiles, C, target_h, target_w = pixel_values.shape
+        
+        # InternVL produces a 16x16 LLM feature map per tile (256 tokens)
+        tile_size = getattr(config,"image_seq_length", 256)
+        llm_grid_h = llm_grid_w = int(math.sqrt(tile_size))
+        
+        # 1. Reshape to allow 2D spatial interpolation across all tiles simultaneously
+        # Shape: [gen_len * num_tiles, 1, 16, 16]
+        pixel_attr_2d = pixel_attribution.view(gen_len * num_tiles, 1, llm_grid_h, llm_grid_w)
+        
+        # 2. Upscale from 16x16 to target size (usually 448x448)
+        pixel_attr_upscaled = F.interpolate(
+            pixel_attr_2d, 
+            size=(target_h, target_w), 
+            mode='bilinear',
+            align_corners=False
+        )
+        
+        # 3. Reshape strictly to the 4D format your metrics expect
+        # Shape: [gen_len, num_tiles, target_h, target_w]
+        return pixel_attr_upscaled.view(gen_len, num_tiles, target_h, target_w)
+
+    # ---------------------------------------------------------
+    # CASE A: Standard VLM (e.g., LLaVA) (4D)
+    # Shape: (Batch, C, H, W)
+    # ---------------------------------------------------------
+    elif "llava" in model_type:
+        _, C, target_h, target_w = pixel_values.shape
         
         # Standard models usually have square ViT grids
         llm_grid_h = llm_grid_w = int(math.sqrt(num_llm_tokens))
         
-        interp_mode = 'bilinear'
-        align_corners = False
+        pixel_attr_2d = pixel_attribution.view(gen_len, 1, llm_grid_h, llm_grid_w)
+        
+        pixel_attr_upscaled = F.interpolate(
+            pixel_attr_2d, 
+            size=(target_h, target_w), 
+            mode='bilinear',
+            align_corners=False
+        )
+        
+        # Shape: [gen_len, target_h, target_w]
+        return pixel_attr_upscaled.view(gen_len, target_h, target_w)
         
     # ---------------------------------------------------------
-    # CASE B: Packed Patches VLM (e.g., Qwen-VL) 
-    # Shape is (grid_h * grid_w, patch_dim)
+    # CASE B: Packed Patches VLM (e.g., Qwen-VL) (3D)
+    # Shape: (Batch, num_patches, patch_dim)
     # ---------------------------------------------------------
-    elif 'image_grid_thw' in inputs:
+    elif "qwen" in model_type:
         _, target_h, target_w = inputs['image_grid_thw'][0].cpu().numpy().tolist()
         
         # Qwen uses a 2x2 spatial merge before the LLM
-        spatial_merge_size = 2
+        spatial_merge_size = getattr(config,"spatial_merge_size", 2)
         llm_grid_h = target_h // spatial_merge_size
         llm_grid_w = target_w // spatial_merge_size
         
-        interp_mode = 'nearest'
-        align_corners = None
+        pixel_attr_2d = pixel_attribution.view(gen_len, 1, llm_grid_h, llm_grid_w)
+        
+        pixel_attr_upscaled = F.interpolate(
+            pixel_attr_2d, 
+            size=(target_h, target_w), 
+            mode='nearest', # Nearest is better for Qwen's discrete patch structure
+        )
+        
+        # Qwen metrics expect flattened patches: [gen_len, target_h * target_w]
+        return pixel_attr_upscaled.view(gen_len, -1)
         
     else:
         raise ValueError("Could not infer spatial grid from inputs. Unknown architecture.")
 
-    # 1. Reshape to native 2D grid
-    # Shape: [gen_len, 1, llm_grid_h, llm_grid_w]
-    pixel_attr_2d = pixel_attribution.reshape(gen_len, 1, llm_grid_h, llm_grid_w)
-
-    # 2. Spatially upsample to match pixel_values
-    # Shape: [gen_len, 1, target_h, target_w]
-    pixel_attr_upscaled = F.interpolate(
-        pixel_attr_2d, 
-        size=(target_h, target_w), 
-        mode=interp_mode,
-        align_corners=align_corners
-    )
-
-    # 3. Flatten back to 1D
-    # Shape: [gen_len, target_h * target_w]
-    return pixel_attr_upscaled.reshape(gen_len, -1)
-
+  
 def align_attribution_to_patches(
     high_res_attr: torch.Tensor, 
     image_grid_thw: torch.Tensor
@@ -298,7 +341,7 @@ def align_attribution_to_patches(
     
     return patch_attr_flat
 
-def create_semantic_mask_robust(input_ids: Tensor,
+def create_semantic_mask_robust_(input_ids: Tensor,
                                 processor,
                                 prefix_text: str,
                                 core_question: str) -> Tensor:
@@ -349,7 +392,7 @@ def create_semantic_mask_robust(input_ids: Tensor,
         
     return mask
 
-def create_semantic_mask_robust_(input_ids: torch.Tensor,
+def create_semantic_mask_robust(input_ids: torch.Tensor,
                                 processor,
                                 core_question: str) -> torch.Tensor:
     """

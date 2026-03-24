@@ -34,7 +34,8 @@ def score_output(model: BaseVLMWrapper,
         if len(p) > 0:
             # Gather and mean directly on the GPU, much faster than appending to a list
             # batch_scores[b] = probs_pred[b, p].sum()
-            log_prob_sum = probs_pred[b, p].sum()
+            # Normalize by length to get the average log probability per token
+            log_prob_sum = probs_pred[b, p].sum() / len(p)
 
             # 2. Convert back to raw probability space [0, 1] for Game Theory Math!
             batch_scores[b] = torch.exp(log_prob_sum)
@@ -59,6 +60,12 @@ def pred_probs(model: BaseVLMWrapper,
     other_kwargs = {k: v \
                     for k, v in inputs.items() \
                     if k not in ['input_ids','pixel_values', 'attention_mask']}
+    
+    # Intercept and flatten 5D tensors for InternVL/AnyRes models
+    if pixel_values is not None and pixel_values.ndim == 5:
+        B, num_tiles, C, H, W = pixel_values.shape
+        # Flatten (B, num_tiles) into a single batch dimension for the Vision Tower
+        pixel_values = pixel_values.view(B * num_tiles, C, H, W)
 
     with torch.no_grad():
         outputs = model.model(
@@ -77,13 +84,6 @@ def pred_probs(model: BaseVLMWrapper,
 
     returned_logits = returned_logits.gather(dim=2, index=output_ids.unsqueeze(-1)).squeeze(-1) # (batch_size, selected_tokens)
     return returned_logits
-
-
-import torch
-import torch.nn.functional as F
-from typing import Dict, Any, List, Optional
-
-
 
 def get_most_important_tokens_pixel(model: BaseVLMWrapper,
                                     inputs: Dict[str, Any],

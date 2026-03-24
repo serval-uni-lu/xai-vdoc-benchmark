@@ -1,6 +1,5 @@
-from typing import Literal, Tuple, List, Optional
+from typing import Literal, Tuple, List, Optional, Dict, Any
 
-from PIL import Image
 import torch
 from captum.attr import (
     IntegratedGradients, InputXGradient,
@@ -28,6 +27,14 @@ class CaptumExplainer(BaseExplainer):
         else:
             raise ValueError(f"Unknow method name {xai_name}")
         return xai_method
+    
+    def _get_integrated_gradient_kwargs(self) -> Dict[str, Any]:
+        integrad_kwargs = {
+            "baselines": None,
+            "n_steps": 5,
+            "internal_batch_size": 1,
+        }
+        return integrad_kwargs
     
     def get_raw_attributions(self,
                              image,
@@ -101,15 +108,17 @@ class CaptumExplainer(BaseExplainer):
                                         ).unsqueeze(0)
                 reference_embeds = self.wrapper.embed_text(reference_ids)
                 baselines = (reference_embeds, torch.zeros_like(pixel_values))
+                
 
             # Get attributions
+            int_kwargs = self._get_integrated_gradient_kwargs()
+            int_kwargs["baselines"] = baselines
+
             if use_baselines:
                 token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
                                                         target=target_token,
                                                         additional_forward_args=step_kwargs,
-                                                        baselines=baselines,
-                                                        n_steps=5,
-                                                        internal_batch_size=1,
+                                                        **int_kwargs
                                                         )
             else:
                 token_attr, pixel_attr = self.explainer.attribute(inputs=captum_forward,
@@ -130,6 +139,17 @@ class CaptumExplainer(BaseExplainer):
         pixel_attrs = torch.stack(pixel_attrs, dim=0) # (seq_len, num_pixels, hidden_dim)
 
         token_attrs = token_attrs.sum(-1)
-        pixel_attrs = pixel_attrs.sum(-1)
+
+        model_type = getattr(self.wrapper.model.config, "model_type", "").lower()
+
+        if "internvl" in model_type:
+            pixel_attrs = pixel_attrs.sum(dim=-3)
+        
+        elif "qwen" in model_type:
+            pixel_attrs = pixel_attrs.sum(dim=-1)
+        
+        else:
+            pixel_attrs = pixel_attrs.sum(dim=-3).sum(dim=1)
+        
 
         return token_attrs, pixel_attrs

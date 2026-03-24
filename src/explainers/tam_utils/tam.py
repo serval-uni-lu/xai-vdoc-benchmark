@@ -376,15 +376,48 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
         if vis_width > 0:
             h = int(float(h) / w * vis_width)
             w = int(vis_width)
+        
+        # expected_tokens = t_h * t_w
+        # if img_scores.size != expected_tokens:
+        #     if img_scores.size < expected_tokens:
+        #         raise ValueError(
+        #             f"img_scores has {img_scores.size} elements, expected at least {expected_tokens}"
+        #         )
+        #     img_scores = img_scores[-expected_tokens:]
 
-        # apply filter
-        img_scores = rank_guassian_filter(img_scores.reshape(t_h, t_w), 3)
+        # # apply filter
+        # img_scores = rank_guassian_filter(img_scores.reshape(t_h, t_w), 3)
+        # img_scores = (img_scores * 255).astype('uint8')
+
+        # Calculate how many tiles we actually have!
+        expected_tokens_per_tile = t_h * t_w
+        num_tiles = img_scores.size // expected_tokens_per_tile
+        
+        # Safety check to ensure we aren't cutting a tile in half
+        if img_scores.size % expected_tokens_per_tile != 0:
+            raise ValueError(f"img_scores size {img_scores.size} is not a perfect multiple of tile size {expected_tokens_per_tile}")
+
+        # Reshape into 3D: (num_tiles, t_h, t_w)
+        img_scores_3d = img_scores.reshape(num_tiles, t_h, t_w)
+
+        # Apply the 2D filter to EACH tile individually
+        filtered_tiles = []
+        for i in range(num_tiles):
+            # Extract single 2D tile (16, 16)
+            single_tile = img_scores_3d[i]
+            
+            # Apply their original filter
+            filtered_tile = rank_guassian_filter(single_tile, 3)
+            filtered_tiles.append(filtered_tile)
+            
+        # 4. Stack back into (num_tiles, 16, 16) and scale to uint8
+        img_scores = np.stack(filtered_tiles, axis=0)
         img_scores = (img_scores * 255).astype('uint8')
 
         if eval_only:
             return None, img_scores, txt_scores
 
-        img_map = cv2.applyColorMap(img_scores, cv2.COLORMAP_JET)
+        img_map = cv2.applyColorMap(img_scores[-expected_tokens_per_tile:], cv2.COLORMAP_JET)
         img_map = cv2.resize(img_map, (w, h))
         if vis_width > 0:
             raw_img = cv2.resize(raw_img, (w, h))

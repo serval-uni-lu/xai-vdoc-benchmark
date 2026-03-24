@@ -110,7 +110,7 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
         pass
 
     @abstractmethod
-    def get_patch_map(self) -> Dict[str, Any]:
+    def get_patch_map(self) -> Dict[Any, Any]:
         pass
 
     @abstractmethod
@@ -341,4 +341,9 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
 
     @abstractmethod
     def remove_patch(self):
+        pass
+
+    @property
+    @abstractmethod
+    def special_token_ids(self) -> List[Any]:
         pass
