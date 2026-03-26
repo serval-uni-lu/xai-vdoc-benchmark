@@ -77,3 +77,4 @@ def create_model_wrapper(
 
     else:
         raise NotImplementedError(f"Wrapper for {vlm_type} is defined in Enum but not instantiated in factory.")
+    

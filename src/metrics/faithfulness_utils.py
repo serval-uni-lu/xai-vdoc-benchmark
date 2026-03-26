@@ -214,3 +214,48 @@ def get_most_important_tokens_multimodal(
             target_positions.append(valid_indices)
             
     return target_positions
+
+def _reshape_pixels_faithfulness(pixel_values: torch.Tensor,
+                                 origin_shape,
+                                 model_type: str
+                                ):
+    # Setup Baselines & Flattening
+    # if ndim == 5: # INTERNVL: (B, num_tiles, C, H, W)
+    if "internvl" in model_type: # INTERNVL: (B, num_tiles, C, H, W)
+        B, num_tiles, C, H, W = origin_shape
+        num_pixels = num_tiles * H * W
+        feat = pixel_values.reshape(B, C, num_pixels)
+    # elif ndim == 4: # STANDARD: (B, C, H, W)
+    elif "llava" in model_type:
+        B, C, H, W = origin_shape
+        num_pixels = H * W
+        feat = pixel_values.reshape(B, C, num_pixels) 
+    # elif ndim == 3: # QWENVL: (B, num_patches, patch_dim)
+    elif "qwen" in model_type:
+        B, num_pixels, patch_dim = origin_shape
+        feat = pixel_values.reshape(B, patch_dim, num_pixels) 
+    else:
+        raise ValueError(f"Model: {model_type} not implemented ! \
+                        Pixel_values shape must be 3D, 4D, or 5D.")
+    return feat, num_pixels
+
+def _reshape_pixels_back_faithfulness(feat_pert: torch.Tensor,
+                                      origin_shape,
+                                      model_type: str
+                                      ):
+    if "internvl" in model_type:
+        B, num_tiles, C, H, W = origin_shape
+        pert_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
+    # elif ndim == 4:
+    elif "llava" in model_type:
+        B, C, H, W = origin_shape
+        pert_pixels = feat_pert.reshape(B, C, H, W)       
+    # elif ndim == 3:
+    elif "qwen" in model_type:
+        B, num_pixels, patch_dim = origin_shape
+        pert_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
+    else:
+        raise ValueError(f"Model: {model_type} not implemented ! \
+                        Pixel_values shape must be 3D, 4D, or 5D.")
+    return pert_pixels
+

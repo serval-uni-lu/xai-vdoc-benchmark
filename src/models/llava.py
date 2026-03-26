@@ -6,7 +6,8 @@ from functools import partial
 
 import torch
 import torch.nn as nn
-
+from transformers import BitsAndBytesConfig
+from transformers import AutoProcessor, LlavaForConditionalGeneration
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 import transformers.models.clip.modeling_clip as modeling_clip
 from lxt.efficient.patches import patch_method, patch_attention, layer_norm_forward
@@ -157,3 +158,25 @@ class LlavaWrapper(BaseVLMWrapper):
     def remove_patch(self):
         return super().remove_patch()
     
+def load_model(model_id="llava-hf/llava-1.5-7b-hf", attn_implementation=None, gpu_node=0, output_attentions=False):
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = LlavaForConditionalGeneration.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        dtype=torch.bfloat16,
+        device_map=f"cuda:{gpu_node}",
+        attn_implementation=attn_implementation,
+        output_attentions=output_attentions,
+        trust_remote_code=True
+    ).eval()
+    
+    if output_attentions:
+        model.config.vision_config.output_attentions = True
+        model.vision_tower.config.output_attentions = True
+        model.vision_tower.vision_model.config.output_attentions = True
+
+    return model, processor

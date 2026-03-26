@@ -7,7 +7,8 @@ from functools import partial
 import torch
 import torch.nn as nn
 from torch.nn import Dropout
-
+from transformers import BitsAndBytesConfig
+from transformers import AutoProcessor, AutoModelForImageTextToText
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 import transformers.models.internvl.modeling_internvl as modeling_internvl
 from lxt.efficient.patches import patch_method, patch_attention
@@ -61,7 +62,6 @@ class InternVLWrapper(BaseVLMWrapper):
             tok.convert_tokens_to_ids("<|im_end|>")
         ]
         return special_token_ids
-
     
     def apply_patch(self):
         pass
@@ -130,10 +130,10 @@ class InternVLWrapper(BaseVLMWrapper):
                             **local_kwargs
                             )
     
-    def get_patch_map(self) -> Dict[Any, Any]:
+    def get_patch_map(self) -> Dict[str, Any]:
         attnLRP = {
             modeling_internvl.InternVLVisionRMSNorm: partial(patch_method, rms_norm_forward),
-            modeling_internvl.InternVLVisionMLP: partial(patch_method, gated_mlp_forward),
+            # modeling_internvl.InternVLVisionMLP: partial(patch_method, gated_mlp_forward),
             Dropout: partial(patch_method, dropout_forward),
             modeling_internvl: patch_attention,
             }
@@ -148,22 +148,40 @@ class InternVLWrapper(BaseVLMWrapper):
     
     def get_tam_config(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         
+        # InternVL has different special ids, please vis inputs['input_ids'] for special ids
+        
+        special_ids = {'img_id': [151671],
+                    'prompt_id': [151653, [151645, 198, 151644, 77091]], 
+                    'answer_id': [[198, 151644, 77091, 198], -1]}
+
         tiles_dim = getattr(self.model.config, "image_seq_length", 256)
         tile_size = int(math.sqrt(tiles_dim))
         vision_shape = (tile_size, tile_size)
         
-        # InternVL has different special ids, please vis inputs['input_ids'] for special ids
-        special_ids = {'img_id': [151665, 151666],
-                    'prompt_id': [[151666, 198], [151645, 198, 151644, 77091]], 
-                    'answer_id': [[198, 151644, 77091, 198], -1]}
         
         return {
             "vision_shape": vision_shape,
             "special_ids": special_ids,
-            "vis_inputs_shape": (448, 448)
+            # "vis_inputs_shape": (448, 448)
         }
     
     
     def remove_patch(self):
         return super().remove_patch()
     
+def load_model(model_id="OpenGVLab/InternVL3_5-2B-HF", attn_implementation=None, gpu_node=0):
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = AutoModelForImageTextToText.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        dtype=torch.bfloat16,
+        device_map=f"cuda:{gpu_node}",
+        attn_implementation=attn_implementation,
+        trust_remote_code=True
+    ).eval()
+    return model, processor
+

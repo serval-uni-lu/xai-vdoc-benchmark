@@ -27,6 +27,25 @@ class XAIVisualizer:
             N=256,
         )
         return cmap
+        
+    def _resolve_target_ids(self, target_ids: torch.Tensor, target_indices: Optional[int | List[int]]) -> torch.Tensor:
+        """
+        Helper to cleanly slice the target_ids tensor based on the requested indices.
+        Returns a 1D tensor of the specific token IDs we are explaining.
+        """
+        flat_targets = target_ids[0] # Assume shape is (1, seq_len)
+        
+        if target_indices is None:
+            return flat_targets # Return all of them
+            
+        if isinstance(target_indices, int):
+            indices = [target_indices]
+        else:
+            indices = target_indices
+            
+        # Safely extract only the requested tokens
+        valid_indices = [idx for idx in indices if idx < len(flat_targets)]
+        return flat_targets[valid_indices]
 
     def plot_text_attributions(self, 
                                text_attr: torch.Tensor, 
@@ -34,52 +53,42 @@ class XAIVisualizer:
                                target_ids: torch.Tensor,
                                special_token_ids: Optional[List] = None,
                                semantic_mask: Optional[torch.Tensor] = None,
-                               normalize: bool = True):
+                               normalize: bool = True,
+                               target_indices: Optional[int | List[int]] = None): # <--- ADDED
         """
         Visualizes text attributions, filtering out visual/special tokens.
-        
-        Args:
-            text_attr: Shape (num_answer_tokens, seq_len)
-            input_ids: Shape (1, seq_len)
-            target_ids: Shape (1, num_answer_tokens)
-            special_token_ids: List of token IDs to exclude (e.g., <|image_pad|>)
-            normalize: Whether to scale scores to [-1, 1] for better color contrast
         """
         special_token_ids = special_token_ids or []
         input_ids_list = input_ids[0].tolist()
         
-        # 1. Identify valid tokens
+        # 1. Identify valid prompt tokens (the text being highlighted)
         valid_indices = []
         for i, tok_id in enumerate(input_ids_list):
-            # Condition A: Always drop pure visual/padding tokens
             if tok_id in special_token_ids:
                 continue
-                
-            # Condition B: If a semantic mask exists, drop tokens where it is False
             if semantic_mask is not None:
                 if not semantic_mask[0, i].item():
                     continue
-            
             valid_indices.append(i)
             
         if len(valid_indices) == 0:
             print("[!] Warning: No valid text tokens found to visualize.")
             return
         
-        # 2. Slice the input_ids and the attributions to keep ONLY valid text
         filtered_input_ids = input_ids[0][valid_indices]
         filtered_text_attr = text_attr[:, valid_indices]
         
-        # 3. Decode the remaining valid tokens for Captum
-        # Using batch_decode on individual tokens to preserve exact 1-to-1 mapping
+        # 3. Decode prompt tokens
         tokens = self.processor.batch_decode(
-            filtered_input_ids.unsqueeze(1), # batch_decode expects a list of sequences
+            filtered_input_ids.unsqueeze(1), 
             skip_special_tokens=False,
             clean_up_tokenization_spaces=False
         )
-        # Flatten the list of lists returned by batch_decode
         if isinstance(tokens[0], list):
              tokens = [t[0] for t in tokens]
+             
+        # --- NEW: Get the exact target tokens we are explaining ---
+        specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
         
         records = []
         num_answer_tokens = filtered_text_attr.shape[0]
@@ -87,14 +96,13 @@ class XAIVisualizer:
         for i in range(num_answer_tokens):
             attr_scores = filtered_text_attr[i].cpu().detach().numpy()
             
-            # --- NORMALIZATION ---
             if normalize:
                 max_abs = np.max(np.abs(attr_scores))
                 if max_abs > 0:
-                    attr_scores = attr_scores / max_abs # Scale to [-1, 1]
+                    attr_scores = attr_scores / max_abs
             
-            # Decode the target token being explained
-            target_token_str = self.processor.decode([target_ids[0, i]])
+            # --- NEW: Decode the exact matched token ---
+            target_token_str = self.processor.decode([specific_target_ids[i]])
             
             record = visualization.VisualizationDataRecord(
                 word_attributions=attr_scores,
@@ -117,71 +125,58 @@ class XAIVisualizer:
                                 img_attr: torch.Tensor, 
                                 original_image: Image.Image, 
                                 target_ids: torch.Tensor, 
-                                image_grid_thw: Optional[torch.Tensor] = None):
+                                image_grid_thw: Optional[torch.Tensor] = None,
+                                target_indices: Optional[int | List[int]] = None): # <--- ADDED
         """
-        Visualizes image attributions dynamically, handling both flattened patches and 2D maps.
-        
-        Args:
-            img_attr: Shape (num_answer_tokens, num_patches) OR (num_answer_tokens, H, W) OR (num_answer_tokens, num_tiles, H, W)
-            original_image: The raw PIL Image object.
-            target_ids: Shape (1, num_answer_tokens)
-            image_grid_thw: Optional. Shape (1, 3). Required if img_attr is flattened patches (like Qwen).
+        Visualizes image attributions dynamically.
         """
         num_tokens = img_attr.shape[0]
         orig_w, orig_h = original_image.size
         
-        # 1. Reshape Attributions to 2D Spatial Grid if necessary
-        if img_attr.dim() == 2: # Shape: (num_tokens, num_patches)
+        # --- NEW: Get the exact target tokens we are explaining ---
+        specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
+        
+        # 1. Reshape Attributions
+        if img_attr.dim() == 2: 
             num_patches = img_attr.shape[1]
-            
             if image_grid_thw is not None:
-                # Qwen-style dynamic grid
                 grid_h = image_grid_thw[0, 1].item()
                 grid_w = image_grid_thw[0, 2].item()
-                assert grid_h * grid_w == num_patches, f"Grid {grid_h}x{grid_w} != {num_patches} patches"
             else:
-                # Fallback: Assume square grid (e.g., standard ViT)
                 grid_h = grid_w = int(np.sqrt(num_patches))
-                
-            # Reshape: (num_tokens, grid_h, grid_w)
             attrs_2d = img_attr.view(num_tokens, grid_h, grid_w)
             
-        elif img_attr.dim() == 3: # Already (num_tokens, H, W)
+        elif img_attr.dim() == 3: 
             attrs_2d = img_attr
 
-        elif img_attr.dim() == 4: # InternVL tiles: (num_tokens, num_tiles, H, W)
-            # The last tile (-1) is the global thumbnail containing the full downsampled image.
-            # Using this allows us to perfectly map the attribution to the original PIL Image.
-            print(f"[*] Detected Tiled Attribution (num_tiles={img_attr.shape[1]}). Visualizing the global thumbnail.")
+        elif img_attr.dim() == 4: 
             attrs_2d = img_attr[:, -1, :, :]
 
         else:
             raise ValueError(f"Unexpected img_attr shape: {img_attr.shape}")
 
-        # 2. Upsample Heatmap to exactly match the PIL Image dimensions
+        # 2. Upsample Heatmap
         attrs_upsampled = F.interpolate(
-            attrs_2d.unsqueeze(1).float(), # (num_tokens, 1, H, W)
-            size=(orig_h, orig_w),         # Target size
+            attrs_2d.unsqueeze(1).float(), 
+            size=(orig_h, orig_w),         
             mode='bilinear', 
             align_corners=False
-        ).squeeze(1) # (num_tokens, orig_h, orig_w)
+        ).squeeze(1) 
 
-        # 3. Prepare the Background Canvas (PIL -> Numpy -> Normalize to [0,1])
+        # 3. Prepare Background
         rgb_background = np.array(original_image.convert("RGB")).astype(np.float32) / 255.0
 
-        # 4. Plot using Captum
         print("\n" + "="*50)
         print("IMAGE ATTRIBUTIONS")
         print("="*50)
         
-        # Make sure you have this helper or replace with "coolwarm" / standard matplotlib colormap
         cmap = self._get_cmap() if hasattr(self, '_get_cmap') else "coolwarm"
 
         for i in range(num_tokens):
-            target_token_str = self.processor.decode([target_ids[0, i]])
+            # --- NEW: Decode the exact matched token ---
+            target_token_str = self.processor.decode([specific_target_ids[i]])
             print(f"\n[*] Heatmap for generated token: '{target_token_str}'")
             
-            # Captum requires the heatmap to have a channel dim: (H, W, 1)
             attr_map = attrs_upsampled[i].unsqueeze(-1).cpu().detach().numpy()
             
             _ = visualization.visualize_image_attr_multiple(
@@ -194,6 +189,7 @@ class XAIVisualizer:
                 use_pyplot=True,
                 cmap=cmap,
             )
+
 
 
 def align_llm_visuals_to_pixels(pixel_attribution: Tensor,

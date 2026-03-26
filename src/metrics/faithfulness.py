@@ -1,4 +1,3 @@
-
 import time
 
 import numpy as np
@@ -12,10 +11,10 @@ from src.metrics.base import BaseMetric
 from src.metrics.faithfulness_utils import (score_output,
                                 get_most_important_tokens_multimodal,
                                  get_most_important_tokens_pixel,
-                                 get_most_important_tokens_token
+                                 get_most_important_tokens_token,
+                                 _reshape_pixels_back_faithfulness,
+                                 _reshape_pixels_faithfulness
                                  )
-
-
 
 class FaithfulnessMetric(BaseMetric):
     def __init__(self, 
@@ -197,19 +196,10 @@ def eval_image_perturbation_batch(
     origin_shape = pixel_values.shape
 
     # Setup Baselines & Flattening
-    if ndim == 5: # INTERNVL: (B, num_tiles, C, H, W)
-        B, num_tiles, C, H, W = origin_shape
-        num_pixels = num_tiles * H * W
-        feat = pixel_values.reshape(B, C, num_pixels)
-    elif ndim == 4: # STANDARD: (B, C, H, W)
-        B, C, H, W = origin_shape
-        num_pixels = H * W
-        feat = pixel_values.reshape(B, C, num_pixels) 
-    elif ndim == 3: # QWENVL: (B, num_patches, patch_dim)
-        B, num_pixels, patch_dim = origin_shape
-        feat = pixel_values.reshape(B, patch_dim, num_pixels) 
-    else:
-        raise ValueError("pixel_values shape must be 3D, 4D, or 5D.")
+    feat, num_pixels = _reshape_pixels_faithfulness(pixel_values=pixel_values,
+                                                    origin_shape=origin_shape,
+                                                    model_type=model_type
+                                                    )
 
     
     # Baseline image (blur)
@@ -219,6 +209,7 @@ def eval_image_perturbation_batch(
 
 
     # Flatten Attribution Map
+    B, *_ = origin_shape
     if pixel_attribution.ndim == 4: # INTERNVL: (B, num_tiles, H, W)
         sal_flat = pixel_attribution.reshape(B, -1) 
     elif pixel_attribution.ndim == 3: # STANDARD: (B, H, W)
@@ -234,7 +225,6 @@ def eval_image_perturbation_batch(
     # Default: Track all tokens in the target.
     # Smart: Track only tokens that drop in probability when image is blurred (find_keywords logic).
     
-    # target_positions = [] # List of tensors, one per batch item
     
     if filter_keywords and blur_baseline is not None:
         target_positions = get_most_important_tokens_pixel(model,
@@ -269,6 +259,9 @@ def eval_image_perturbation_batch(
                                 output_ids=target_ids,
                                 positions=target_positions,
                                 ).numpy() # (B,)
+    
+    normalizer = np.abs(baseline_scores - blur_scores)
+
     # else:
     #     # Temporary fallback if no blur image provided: assume 0.0 or calculate on fully masked
     #     blur_scores = np.zeros_like(baseline_scores) # Placeholder
@@ -323,17 +316,10 @@ def eval_image_perturbation_batch(
                         ) # (B, num_feats, k)
         
         # Reshape back to original pixel_values
-        if ndim == 5:
-            B, num_tiles, C, H, W = origin_shape
-            del_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
-        elif ndim == 4:
-            B, C, H, W = origin_shape
-            del_pixels = feat_pert.reshape(B, C, H, W)       
-        elif ndim == 3:
-            B, num_pixels, patch_dim = origin_shape
-            del_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
-        else:
-            raise ValueError("Wrong dim for the pixel values !")
+        del_pixels = _reshape_pixels_back_faithfulness(feat_pert=feat_pert,
+                                                       origin_shape=origin_shape,
+                                                       model_type=model_type
+                                                       )
 
 
         # ----------------------------
@@ -354,18 +340,11 @@ def eval_image_perturbation_batch(
                            src=mask_src
                         ) # (B, num_feats, k)
         
-        # Reshape back to original pixel_values
-        if ndim == 5:
-            B, num_tiles, C, H, W = origin_shape
-            ins_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
-        elif ndim == 4:
-            B, C, H, W = origin_shape
-            ins_pixels = feat_pert.reshape(B, C, H, W)       
-        elif ndim == 3:
-            B, num_pixels, patch_dim = origin_shape
-            ins_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
-        else:
-            raise ValueError("Wrong dim for the pixel values !")
+        # Reshape back to original pixel_values        
+        ins_pixels = _reshape_pixels_back_faithfulness(feat_pert=feat_pert,
+                                                       origin_shape=origin_shape,
+                                                       model_type=model_type
+                                                       )
         
 
         # ------------- Scoring --------------
@@ -381,7 +360,8 @@ def eval_image_perturbation_batch(
 
         # Normalize: (Current - Blur) / (Original - Blur)
         # This matches: outputs = (outputs-blur_scores) / (og_scores-blur_scores)
-        norm_score = (current_del_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        # norm_score = (current_del_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        norm_score = (current_del_scores - blur_scores) / normalizer
         normalized_del_scores[i] = norm_score
 
         # Compute Insertion Scores
@@ -395,7 +375,8 @@ def eval_image_perturbation_batch(
         ins_scores_perturb[i] = current_ins_scores
 
         # Normalize: (Current - Blur) / (Original - Blur)
-        norm_score = (current_ins_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        # norm_score = (current_ins_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        norm_score = (current_ins_scores - blur_scores) / normalizer
         normalized_ins_scores[i] = norm_score
     
     # Compute AUC scores
@@ -522,6 +503,8 @@ def eval_token_perturbation_batch(
                                output_ids=target_ids,
                                positions=target_positions
                                ).numpy()
+    
+    normalizer = np.abs(baseline_scores - blur_scores)
 
     # 4. Perturbation Loop
     S = len(perturbation_steps)
@@ -586,7 +569,8 @@ def eval_token_perturbation_batch(
                             positions=target_positions
                             ).numpy()
         del_curve[i] = s_del
-        norm_del_curve[i] = (s_del - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        # norm_del_curve[i] = (s_del - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        norm_del_curve[i] = (s_del - blur_scores) / normalizer
 
         # Insertion
         s_ins = score_output(model,
@@ -597,7 +581,8 @@ def eval_token_perturbation_batch(
                             positions=target_positions
                             ).numpy()
         ins_curve[i] = s_ins
-        norm_ins_curve[i] = (s_ins - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        # norm_ins_curve[i] = (s_ins - blur_scores) / (baseline_scores - blur_scores + 1e-9)
+        norm_ins_curve[i] = (s_ins - blur_scores) / normalizer
 
     # Compute AUC scores
     norm_auc_del = np.trapezoid(norm_del_curve,
@@ -677,20 +662,13 @@ def eval_multimodal_synergy_batch(
     ndim = pixel_values.ndim
     origin_shape = pixel_values.shape
 
-    # Setup Baselines & Flattening
-    if ndim == 5: # INTERNVL: (B, num_tiles, C, H, W)
-        B, num_tiles, C, H, W = origin_shape
-        num_pixels = num_tiles * H * W
-        feat = pixel_values.reshape(B, C, num_pixels)
-    elif ndim == 4: # STANDARD: (B, C, H, W)
-        B, C, H, W = origin_shape
-        num_pixels = H * W
-        feat = pixel_values.reshape(B, C, num_pixels) 
-    elif ndim == 3: # QWENVL: (B, num_patches, patch_dim)
-        B, num_pixels, patch_dim = origin_shape
-        feat = pixel_values.reshape(B, patch_dim, num_pixels) 
-    else:
-        raise ValueError("pixel_values shape must be 3D, 4D, or 5D.")
+    model_type = model.model.config.model_type
+
+    # # Setup Baselines & Flattening
+    feat, num_pixels = _reshape_pixels_faithfulness(pixel_values=pixel_values,
+                                                    origin_shape=origin_shape,
+                                                    model_type=model_type
+                                                    )
     
     num_img_feat = feat.shape[1] # C or patch_dim
     
@@ -700,6 +678,7 @@ def eval_multimodal_synergy_batch(
     feat_baseline = blur_baseline.clone().reshape(feat.shape)
     
     # Flatten Attribution Map
+    B, *_ = origin_shape
     if pixel_attribution.ndim == 4: # INTERNVL: (B, num_tiles, H, W)
         sal_flat_img = pixel_attribution.reshape(B, -1) 
     elif pixel_attribution.ndim == 3: # STANDARD: (B, H, W)
@@ -772,6 +751,7 @@ def eval_multimodal_synergy_batch(
 
     normalizer_ins = full_scores - zeros_scores
     normalizer_del = full_scores - zeros_scores
+    normalizer = np.abs(full_scores - zeros_scores)
     
     # --- 4. Loop ---
     S = len(perturbation_steps)
@@ -817,18 +797,11 @@ def eval_multimodal_synergy_batch(
         # Apply mask on img
         feat_pixels.scatter_(dim=2, index=top_img_idx_exp, src=pixels_orig)
 
-        # Reshape back to original pixel_values
-        if ndim == 5:
-            B, num_tiles, C, H, W = origin_shape
-            del_pixels = feat_pixels.reshape(B, num_tiles, C, H, W)
-        elif ndim == 4:
-            B, C, H, W = origin_shape
-            del_pixels = feat_pixels.reshape(B, C, H, W)       
-        elif ndim == 3:
-            B, num_pixels, patch_dim = origin_shape
-            del_pixels = feat_pixels.reshape(B, num_pixels, patch_dim)
-        else:
-            raise ValueError("Wrong dim for the pixel values !")
+        # # Reshape back to original pixel_values
+        del_pixels = _reshape_pixels_back_faithfulness(feat_pert=feat_pixels,
+                                                       origin_shape=origin_shape,
+                                                       model_type=model_type
+                                                       )
         
 
         # Construct "del_tokens" (Original Tokens - Top K Tokens)
@@ -854,18 +827,11 @@ def eval_multimodal_synergy_batch(
                            src=mask_src
                         ) # (B, num_feats, k)
         
-        # Reshape back to original pixel_values
-        if ndim == 5:
-            B, num_tiles, C, H, W = origin_shape
-            ins_pixels = feat_pert.reshape(B, num_tiles, C, H, W)
-        elif ndim == 4:
-            B, C, H, W = origin_shape
-            ins_pixels = feat_pert.view(B, C, H, W)       
-        elif ndim == 3:
-            B, num_pixels, patch_dim = origin_shape
-            ins_pixels = feat_pert.reshape(B, num_pixels, patch_dim)
-        else:
-            raise ValueError("Wrong dim for the pixel values !")
+        # Reshape back to original pixel_values      
+        ins_pixels = _reshape_pixels_back_faithfulness(feat_pert=feat_pert,
+                                                       origin_shape=origin_shape,
+                                                       model_type=model_type
+                                                       )
 
 
         # Construct "ins_tokens" (Pad Tokens + Top K Tokens)
@@ -912,9 +878,10 @@ def eval_multimodal_synergy_batch(
         #           + P(Img, Txt\Txt_k) - P(Img, Txt)        
         del_synergy = del_p_joint - (del_p_img_only + del_p_txt_only - full_scores)
         del_synergy_curve[i] = del_synergy
-        del_norm_synergy_curve[i] = del_p_joint - (del_p_img_only + del_p_txt_only - zeros_scores)
-        del_norm_synergy_curve[i] /= (normalizer_del + 1e-9)
-        del_norm_synergy_curve[i] += 1
+        # del_norm_synergy_curve[i] = del_p_joint - (del_p_img_only + del_p_txt_only - zeros_scores)
+        # del_norm_synergy_curve[i] /= (normalizer_del + 1e-9)
+        # del_norm_synergy_curve[i] += 1
+        del_norm_synergy_curve[i] = del_synergy / normalizer
 
         # --- Insertion Scoring ---
 
@@ -950,7 +917,8 @@ def eval_multimodal_synergy_batch(
         ins_synergy = ins_p_joint - (ins_p_img_only + ins_p_txt_only - zeros_scores)
         # ins_synergy = ins_p_joint - (ins_p_img_only + ins_p_txt_only)
         ins_synergy_curve[i] = ins_synergy
-        ins_norm_synergy_curve[i] = ins_synergy / (normalizer_ins + 1e-9)
+        # ins_norm_synergy_curve[i] = ins_synergy / (normalizer_ins + 1e-9)
+        ins_norm_synergy_curve[i] = ins_synergy / normalizer
 
     del_norm_syn_auc = np.trapezoid(del_norm_synergy_curve,
                                 x=perturbation_steps, axis=0)

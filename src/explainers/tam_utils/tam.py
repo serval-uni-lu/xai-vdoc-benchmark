@@ -5,6 +5,60 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 from pathlib import Path
 
+from numpy.lib.stride_tricks import sliding_window_view
+
+def vectorized_rank_gaussian_filter(img_3d, kernel_size=3):
+    """
+    Blazing fast, 3D vectorized version of the rank-based Gaussian filter.
+    Processes all tiles and all pixels simultaneously.
+    
+    Parameters:
+    img_3d : np.ndarray
+        Input 3D array of shape (num_tiles, H, W).
+    kernel_size : int
+        Size of the square kernel (must be odd).
+    """
+    T, H, W = img_3d.shape
+    pad_width = kernel_size // 2
+    
+    # 1. Pad only the spatial dimensions (H and W), leave the tile dimension alone
+    padded = np.pad(img_3d, ((0, 0), (pad_width, pad_width), (pad_width, pad_width)), mode='reflect')
+    
+    # 2. Extract all sliding windows simultaneously
+    # Shape becomes: (num_tiles, H, W, kernel_size, kernel_size)
+    windows = sliding_window_view(padded, window_shape=(kernel_size, kernel_size), axis=(1, 2))
+    
+    # Flatten the 3x3 window into 9 elements: (num_tiles, H, W, 9)
+    windows = windows.reshape(T, H, W, -1)
+    
+    # 3. Sort all windows in parallel
+    sorted_windows = np.sort(windows, axis=-1)
+    
+    # 4. Compute Means and Standard Deviations
+    mean = sorted_windows.mean(axis=-1, keepdims=True)
+    std = sorted_windows.std(axis=-1, keepdims=True)
+    
+    # Safely compute sigma (avoid division by zero)
+    safe_mean = np.where(mean > 0, mean, 1e-9)
+    sigma = std / safe_mean
+    
+    # 5. Build the Gaussian Kernel
+    ax = np.arange(kernel_size ** 2) - kernel_size ** 2 // 2
+    ax2 = ax ** 2 # Shape: (9,)
+    
+    safe_sigma2 = np.where(sigma > 0, 2 * sigma**2, 1e-9)
+    
+    # Broadcast math: (num_tiles, H, W, 1) and (9,) -> (num_tiles, H, W, 9)
+    kernel = np.exp(-ax2 / safe_sigma2)
+    kernel = kernel / kernel.sum(axis=-1, keepdims=True)
+    
+    # 6. Apply Kernel to sorted windows
+    value = (sorted_windows * kernel).sum(axis=-1)
+    
+    # 7. Apply the original "if mean > 0" mask
+    filtered_img_3d = np.where(mean.squeeze(-1) > 0, value, 0)
+    
+    return filtered_img_3d
 
 def rank_guassian_filter(img, kernel_size=3):
     """
@@ -390,34 +444,54 @@ def multimodal_process(raw_img, vision_shape, img_scores, txt_scores, txts, cand
         # img_scores = (img_scores * 255).astype('uint8')
 
         # Calculate how many tiles we actually have!
-        expected_tokens_per_tile = t_h * t_w
-        num_tiles = img_scores.size // expected_tokens_per_tile
-        
-        # Safety check to ensure we aren't cutting a tile in half
-        if img_scores.size % expected_tokens_per_tile != 0:
-            raise ValueError(f"img_scores size {img_scores.size} is not a perfect multiple of tile size {expected_tokens_per_tile}")
+        expected_tokens = t_h * t_w
+        num_tiles = img_scores.size // expected_tokens
 
-        # Reshape into 3D: (num_tiles, t_h, t_w)
-        img_scores_3d = img_scores.reshape(num_tiles, t_h, t_w)
+        if num_tiles > 1 and eval_only:
+            if img_scores.size % expected_tokens != 0:
+                raise ValueError(f"img_scores size {img_scores.size} is not a perfect multiple of tile size {expected_tokens}")
 
-        # Apply the 2D filter to EACH tile individually
-        filtered_tiles = []
-        for i in range(num_tiles):
-            # Extract single 2D tile (16, 16)
-            single_tile = img_scores_3d[i]
+            # Reshape into 3D: (num_tiles, t_h, t_w)
+            img_scores_3d = img_scores.reshape(num_tiles, t_h, t_w)
+
+            # --- MASSIVE SPEEDUP: Apply vectorized filter to all tiles at once ---
+            img_scores_3d = vectorized_rank_gaussian_filter(img_scores_3d, kernel_size=3)
             
-            # Apply their original filter
-            filtered_tile = rank_guassian_filter(single_tile, 3)
-            filtered_tiles.append(filtered_tile)
-            
-        # 4. Stack back into (num_tiles, 16, 16) and scale to uint8
-        img_scores = np.stack(filtered_tiles, axis=0)
-        img_scores = (img_scores * 255).astype('uint8')
+            # Scale to uint8
+            img_scores = (img_scores_3d * 255).astype('uint8')
 
-        if eval_only:
+            # # Apply the 2D filter to EACH tile individually
+            # filtered_tiles = []
+            # for i in range(num_tiles):
+            #     filtered_tile = rank_guassian_filter(img_scores_3d[i], 3)
+            #     filtered_tiles.append(filtered_tile)
+                
+            # # Stack back into (num_tiles, 16, 16) and scale to uint8
+            # img_scores = np.stack(filtered_tiles, axis=0)
+            # img_scores = (img_scores * 255).astype('uint8')
+
+            # We MUST return early here! If we let the code continue, 
+            # cv2.resize will crash trying to resize a 3D array.
             return None, img_scores, txt_scores
+        
+        else:
+            if img_scores.size < expected_tokens:
+                raise ValueError(
+                    f"img_scores has {img_scores.size} elements, expected at least {expected_tokens}"
+                )
+            
+            # Keep only the last tile (Global thumbnail for InternVL, or only tile for LLaVA)
+            img_scores = img_scores[-expected_tokens:]
 
-        img_map = cv2.applyColorMap(img_scores[-expected_tokens_per_tile:], cv2.COLORMAP_JET)
+            # Apply filter
+            img_scores = rank_guassian_filter(img_scores.reshape(t_h, t_w), 3)
+            img_scores = (img_scores * 255).astype('uint8')
+
+            if eval_only:
+                return None, img_scores, txt_scores
+
+
+        img_map = cv2.applyColorMap(img_scores, cv2.COLORMAP_JET)
         img_map = cv2.resize(img_map, (w, h))
         if vis_width > 0:
             raw_img = cv2.resize(raw_img, (w, h))
@@ -630,8 +704,13 @@ def TAM(tokens, vision_shape, logit_list, special_ids, vision_input, \
     # save img_scores for next Estimated Causal Inference
     img_scores_list.append(img_scores)
 
+    # --- OOM / SPEEDHACK FIX: CHECK FOR DESYNC ---
+    # If we skipped tokens to speed up generation, img_scores_list will be too short.
+    # We must ensure length matches the current token index to safely perform ECI.
+    is_synced = (len(img_scores_list) == vis_token_idx + 1)
+
     # exclude the same words in ECI
-    if len(img_scores_list) > 1 and vis_token_idx < len(txt_all):
+    if is_synced and len(img_scores_list) > 1 and vis_token_idx < len(txt_all):
         non_repeat_idx = []
         for i in range(vis_token_idx):
             if i < len(txt_all) and txt_all[i] != txt_all[vis_token_idx]:

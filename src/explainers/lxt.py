@@ -126,7 +126,6 @@ class LXTExplainer(BaseExplainer):
                              image,
                              text: str,
                              target_indices: Optional[int | List[int]] = None,
-                             # token_wise: bool = True,
                              **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         
         # 1. SETUP PRISTINE INPUTS
@@ -144,116 +143,142 @@ class LXTExplainer(BaseExplainer):
         t_end = full_ids.shape[-1]
         gen_len = t_end - t_start
 
-        # Default to explaining all generated tokens if none specified
+        # --- DYNAMIC INDICES RESOLUTION ---
         if target_indices is None:
-            target_indices = list(range(gen_len))
+            indices_to_compute = list(range(gen_len))
+        elif isinstance(target_indices, int):
+            indices_to_compute = [target_indices]
+        else:
+            indices_to_compute = target_indices
+
+        # Safety check
+        indices_to_compute = [idx for idx in indices_to_compute if idx < gen_len]
+
 
         # Build full sequence inputs
-        inputs["input_ids"] = full_ids.clone().unsqueeze(0)
+        inputs["input_ids"] = full_ids.clone()
+        if inputs["input_ids"].ndim == 1:
+            inputs["input_ids"] = inputs["input_ids"].unsqueeze(0)
+            
         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
 
-
-        pixel_values = inputs["pixel_values"].clone().detach()
-        pixel_values.requires_grad_(True)
-        ndim = pixel_values.ndim
-        
         kwargs_dict = {k: v for k, v in inputs.items() if k not in ['pixel_values']}
-
-        # We must get the embeddings for the FULL sequence to pass to Captum/LRP
-        text_embeds = self.wrapper.embed_text(inputs["input_ids"]).clone().detach()
-        text_embeds.requires_grad_(True)
-
-        # 2. RUN FORWARD PASS
-        # (Zennit composite should already be registered on the model from _ensure_patched)
-        log_logits = self.wrapper.get_captum_forward(
-            text_embeds=text_embeds,
-            pixel_values=pixel_values,
-            kwargs_dict=kwargs_dict,
-            return_full_sequence=True
-        )
-
-        # 3. CAUSAL GATHER
-        # log_logits shape: [1, seq_len, vocab_size]
-        gen_logits = log_logits[:, t_start-1 : t_end-1, :]
-        gen_ids_1d = full_ids.squeeze()[t_start:t_end].to(dtype=torch.long, device=gen_logits.device)
-        generated_token_ids = gen_ids_1d.unsqueeze(0).unsqueeze(-1)
         
-        # Gather the specific logits of the generated words!
-        # target_logits shape: [1, gen_len]
-        target_logits = gen_logits.gather(dim=-1, index=generated_token_ids).squeeze(-1)
+        # Pre-embed text so we don't have to do it in the loop
+        base_text_embeds = self.wrapper.embed_text(inputs["input_ids"]).clone().detach()
+        base_pixel_values = inputs["pixel_values"].clone().detach()
 
         token_attributions = []
         pixel_attributions = []
 
-        model_type = self.wrapper.model.config.model_type
+        model_type = self.wrapper.model.config.model_type.lower()
+        
+        # We need the exact token IDs generated to gather the correct logit
+        generated_token_ids = full_ids[t_start:t_end]
 
-        # 4. BACKWARD PASS ENGINE (Gradient * Activation)
+        # 2. BACKWARD PASS ENGINE (Gradient * Activation)
         if not self.token_wise:
-            # --- SENTENCE-LEVEL ---
+            # --- SENTENCE-LEVEL (AGGREGATED) ---
+            # Run one forward pass
+            pixel_values = base_pixel_values.clone().requires_grad_(True)
+            text_embeds = base_text_embeds.clone().requires_grad_(True)
+            
             self.wrapper.model.zero_grad()
             
-            # Sum the target logits for the requested indices
-            sentence_score = target_logits[0, target_indices].sum()
-            sentence_score.backward(retain_graph=True)
+            log_logits = self.wrapper.get_captum_forward(
+                text_embeds=text_embeds,
+                pixel_values=pixel_values,
+                kwargs_dict=kwargs_dict,
+                return_full_sequence=True
+            )
+            
+            # Causal Shift: Grab the logits that predicted the generated tokens
+            gen_logits = log_logits[:, t_start-1 : t_end-1, :]
+            
+            # Gather target probabilities
+            gathered_logits = gen_logits[0, torch.arange(gen_len), generated_token_ids]
+            
+            # Sum only the requested indices
+            sentence_score = gathered_logits[indices_to_compute].sum()
+            sentence_score.backward(retain_graph=False) # False is safe here!
             
             # LRP Rule: Relevance = Gradient * Activation
             if "qwen" in model_type:
-                # QwenVL (num_patches, patch_dim)
                 rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
             elif "internvl" in model_type:
                 rel_img = (pixel_values.grad * pixel_values).float().sum(-3).detach().cpu()
             elif "llava" in model_type:
                 rel_img = (pixel_values.grad * pixel_values).float().sum(-3).sum(0).detach().cpu()
             else:
-                raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
+                raise ValueError(f"Unexpected pixel_values shape for {model_type}")
             
             rel_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
             
-            # Store
+            # Shape: (1, ...)
             token_attributions.append(rel_text)
             pixel_attributions.append(rel_img)
             
         else:
-            # --- TOKEN-WISE ---
-            for idx in target_indices:
-                # Clear gradients from the previous token!
+            # --- TOKEN-WISE (ISOLATED) ---
+            for idx in indices_to_compute:
+                # Fresh tensors for isolated gradients
+                pixel_values = base_pixel_values.clone().requires_grad_(True)
+                text_embeds = base_text_embeds.clone().requires_grad_(True)
+                
                 self.wrapper.model.zero_grad()
-                if pixel_values.grad is not None: pixel_values.grad.zero_()
-                if text_embeds.grad is not None: text_embeds.grad.zero_()
+                
+                # Fresh forward pass prevents internal gradient accumulation
+                log_logits = self.wrapper.get_captum_forward(
+                    text_embeds=text_embeds,
+                    pixel_values=pixel_values,
+                    kwargs_dict=kwargs_dict,
+                    return_full_sequence=True
+                )
+                
+                gen_logits = log_logits[:, t_start-1 : t_end-1, :]
+                gathered_logits = gen_logits[0, torch.arange(gen_len), generated_token_ids]
                 
                 # Backpropagate just this specific token
-                target_logits[0, idx].backward(retain_graph=True)
+                target_logit = gathered_logits[idx]
+                target_logit.backward(retain_graph=False) # False is critical here!
                 
                 # LRP Rule: Relevance = Gradient * Activation
                 if "qwen" in model_type:
-                    # QwenVL (num_patches, patch_dim)
                     rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
                 elif "internvl" in model_type:
                     rel_img = (pixel_values.grad * pixel_values).float().sum(-3).detach().cpu()
                 elif "llava" in model_type:
                     rel_img = (pixel_values.grad * pixel_values).float().sum(-3).sum(0).detach().cpu()
                 else:
-                    raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
-                # rel_img = (pixel_values.grad * pixel_values).float().sum(-1).detach().cpu()
+                    raise ValueError(f"Unexpected pixel_values shape for {model_type}")
+                
                 rel_text = (text_embeds.grad * text_embeds).float().sum(-1).detach().cpu()
-
                 
                 token_attributions.append(rel_text)
                 pixel_attributions.append(rel_img)
+                
+                del log_logits, pixel_values, text_embeds
+                torch.cuda.empty_cache()
 
-        # 5. CLEANUP & FORMATTING
+        # 3. CLEANUP & FORMATTING
         if self.zennit_comp is not None:
             self.zennit_comp.remove()
-            self.zennit_comp = None # Ensure it doesn't get removed twice
+            self.zennit_comp = None
             
         torch.cuda.empty_cache()
 
-        # Stack into [len(target_indices), num_pixels] tensors
+
+
+        # # Stack into [len(target_indices), ...] tensors
+        # if "llava" in model_type:
+        #      # LLaVA already summed dim 0, so we just stack directly
+        #      relevance_img = torch.stack(pixel_attributions, dim=0)
+        # else:
+        #      relevance_img = torch.cat(pixel_attributions, dim=0)
         relevance_img = torch.stack(pixel_attributions, dim=0)
         relevance_text = torch.cat(token_attributions, dim=0)
 
-        # Slice the text relevance to only include the prompt if desired, 
-        # or leave as full sequence length.
+        # Slice the text relevance to only include the prompt
         relevance_text = relevance_text[:, :t_start]
         
         return relevance_text, relevance_img

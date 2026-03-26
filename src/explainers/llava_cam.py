@@ -120,25 +120,28 @@ class LLaVACAMExplainer(BaseExplainer):
     
     def get_raw_attributions(self,
                             image, text,
-                            target_indices=None,
+                            target_indices: Optional[int | List[int]] = None,
                             **kwargs
                             ) -> Tuple[torch.Tensor, torch.Tensor]:
         
         # Grad-CAM
         if self.num_samples <= 1:
-            smooth_token_cam, smooth_pixel_cam = self.llava_cam(image=image,
-                                                                text=text,
-                                                                **kwargs)
+            smooth_token_cam, smooth_pixel_cam = self.llava_cam(
+                image=image, text=text, target_indices=target_indices, **kwargs
+            )
             return smooth_token_cam, smooth_pixel_cam
 
-        # SmoothGRAD-CAM (or Llava-CAM)
-        # First run to get shape and type
+        # SmoothGRAD-CAM
         noisy_img = self._add_noise(image, noise_std=self.noise_std)
-        smooth_token_cam, smooth_pixel_cam = self.llava_cam(image=noisy_img, text=text, **kwargs)
+        smooth_token_cam, smooth_pixel_cam = self.llava_cam(
+            image=noisy_img, text=text, target_indices=target_indices, **kwargs
+        )
 
         for _ in range(self.num_samples - 1):
             noisy_img = self._add_noise(image, noise_std=self.noise_std)
-            t_cam, p_cam = self.llava_cam(image=noisy_img, text=text, **kwargs)
+            t_cam, p_cam = self.llava_cam(
+                image=noisy_img, text=text, target_indices=target_indices, **kwargs
+            )
             
             smooth_token_cam += t_cam
             smooth_pixel_cam += p_cam
@@ -152,9 +155,10 @@ class LLaVACAMExplainer(BaseExplainer):
     def llava_cam(self,
             image,
             text: str,
+            target_indices: Optional[int | List[int]] = None,
             **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Generates raw attributions. 
+        Generates raw attributions dynamically for specified targets.
         """
         inputs = self.wrapper.get_inputs(image, text)
         
@@ -171,14 +175,24 @@ class LLaVACAMExplainer(BaseExplainer):
         t_end = full_ids.shape[-1]
         gen_len = t_end - t_start
                 
+        # --- DYNAMIC INDICES RESOLUTION ---
+        if target_indices is None:
+            indices_to_compute = list(range(gen_len))
+        elif isinstance(target_indices, int):
+            indices_to_compute = [target_indices]
+        else:
+            indices_to_compute = target_indices
+
+        # Safety check
+        indices_to_compute = [idx for idx in indices_to_compute if idx < gen_len]
+
+
         inputs["input_ids"] = full_ids.clone()  # (batch, seq_len)
         if inputs["input_ids"].ndim == 1:
             inputs["input_ids"] = inputs["input_ids"].unsqueeze(0)
             
         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
 
-        # --- ROBUST IMAGE TOKEN IDENTIFICATION ---
-        # InternVL uses <IMG_CONTEXT>, LLaVA uses <image>, Qwen uses <|image_pad|>
         image_token_id = self.wrapper.model.config.image_token_id
 
         # Boolean Masks (flattened to 1D)
@@ -205,8 +219,8 @@ class LLaVACAMExplainer(BaseExplainer):
                 token_attributions = []
                 pixel_attributions = []
 
-                # Iterate on each generated token's logit
-                for i in range(gen_len):
+                # --- TARGETED LOOP: Only backward pass on requested indices ---
+                for i in indices_to_compute:
                     self.wrapper.model.zero_grad()
                     target_logits[:, i].backward(retain_graph=True)
 
@@ -222,18 +236,20 @@ class LLaVACAMExplainer(BaseExplainer):
                     token_attributions.append(tok_attr)
                     pixel_attributions.append(pix_attr)
                 
-                token_attribution = torch.stack(token_attributions, dim=0) # [gen_len, num_text_tokens]
-                pixel_attribution = torch.stack(pixel_attributions, dim=0) # [gen_len, num_image_tokens]
+                token_attribution = torch.stack(token_attributions, dim=0) # [num_targets, num_text_tokens]
+                pixel_attribution = torch.stack(pixel_attributions, dim=0) # [num_targets, num_image_tokens]
 
             else:
-                answer_score = target_logits.sum()
+                # --- AGGREGATED TARGETS: Only sum the requested indices ---
+                answer_score = target_logits[0, indices_to_compute].sum()
                 self.wrapper.model.zero_grad()
                 answer_score.backward(retain_graph=True)
 
                 token_attribution = self.compute_cam(final_text_mask).unsqueeze(0)
                 pixel_attribution = self.compute_cam(final_image_mask).unsqueeze(0)
 
+        # Map back to 2D/3D pixel space
         pixel_attribution = align_llm_visuals_to_pixels(pixel_attribution, inputs, config=self.wrapper.model.config)
 
-
         return token_attribution, pixel_attribution
+

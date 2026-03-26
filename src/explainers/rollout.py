@@ -53,7 +53,7 @@ class RolloutExplainer(BaseExplainer):
             layer_grads = [None] * len(chunk_list)
             
             def create_hook(idx, target_list):
-                return lambda grad: target_list.__setitem__(idx, grad)
+                return lambda grad: target_list.__setitem__(idx, grad.clone().detach().cpu())
 
             for i, chunk in enumerate(chunk_list):
                 if chunk is not None:
@@ -119,57 +119,83 @@ class RolloutExplainer(BaseExplainer):
             # Restore the original Hugging Face blueprint
             self.wrapper.remove_patch()
 
-    
     def _compute_rollout_math(self, attentions, gradients=None) -> torch.Tensor:
-        """The core mathematical engine for Rollout."""
+        """The core mathematical engine for Rollout with aggressive VRAM management."""
         if not attentions:
             raise ValueError("Need attention weights to compute Attention (Grad)Rollout")
 
-        # Stitch chunks if dealing with Qwen Vision
-        stitched_attns = [stitch_chunks_to_matrix(layer) for layer in attentions]
+        math_device = getattr(self, "device", "cuda")
         
-        seq_len = stitched_attns[0].size(-1)
-        rollout = torch.eye(seq_len).to(stitched_attns[0].device)
+        # Calculate total sequence length based on the chunks in Layer 0
+        total_seq_len = sum(chunk.shape[2] for chunk in attentions[0])
+        rollout = torch.eye(total_seq_len, device=math_device)
 
         if gradients is not None and len(gradients) > 0:
             # GRADIENT ROLLOUT (Chefer et al. 2021)
             
-            stitched_grads = []
             for layer_attns, layer_grads in zip(attentions, gradients):
-                # SAFELY HANDLE NONE GRADIENTS:
-                # If PyTorch skipped a frozen layer, replace None with zeros of the same shape
-                safe_grads = [
-                    g if g is not None else torch.zeros_like(a).to(device=self.device) 
-                    for a, g in zip(layer_attns, layer_grads)
-                ]
-                stitched_grads.append(stitch_chunks_to_matrix(safe_grads))
-            
-            # [!] DO NOT REVERSE stitched_grads! 
-            # The lists were appended during the forward pass, so they are already aligned!
-
-            for attn, grad in zip(stitched_attns, stitched_grads):
-                grad_attn = attn * grad
-                grad_attn = torch.clamp(grad_attn, min=0.0) # ReLU
-                grad_attn = grad_attn.mean(dim=1).squeeze(0)
-                grad_attn = grad_attn + torch.eye(seq_len).to(grad_attn.device)
+                processed_chunks = []
                 
-                # Optional: Re-normalize if needed by your specific Rollout variant
-                # grad_attn = F.normalize(grad_attn, p=1, dim=-1)
+                # --- OOM FIX: DO THE MATH ON TINY CHUNKS BEFORE STITCHING ---
+                for a, g in zip(layer_attns, layer_grads):
+                    # Move just this tiny chunk to GPU
+                    a_gpu = a.to(math_device)
+                    g_gpu = g.to(math_device) if g is not None else torch.zeros_like(a_gpu)
+                    
+                    # Multiply and ReLU
+                    grad_attn_chunk = (a_gpu * g_gpu)
+                    grad_attn_chunk = torch.clamp(grad_attn_chunk, min=0.0)
+                    
+                    # Collapse heads immediately! (e.g., 32 heads -> 1 head)
+                    # keepdim=True maintains (B, 1, seq, seq) shape so the stitcher doesn't break
+                    grad_attn_chunk = grad_attn_chunk.mean(dim=1, keepdim=True)
+                    processed_chunks.append(grad_attn_chunk)
+                    
+                    # Free chunk VRAM immediately
+                    del a_gpu, g_gpu
                 
+                # --- STITCH THE COLLAPSED CHUNKS ---
+                # This matrix is now 32x smaller in VRAM!
+                stitched_grad_attn = stitch_chunks_to_matrix(processed_chunks)
+                
+                # Remove batch and head dims -> shape: (total_seq_len, total_seq_len)
+                grad_attn = stitched_grad_attn.squeeze(0).squeeze(0)
+                
+                grad_attn = grad_attn + torch.eye(total_seq_len, device=math_device)
                 rollout = torch.matmul(grad_attn, rollout)
+                
+                del stitched_grad_attn, grad_attn
+                torch.cuda.empty_cache()
+
         else:
             # STANDARD ROLLOUT (Abnar et al. 2020)
-            for attn in stitched_attns:
-                attn_fused = attn.mean(dim=1).squeeze(0)
-                attn_fused = attn_fused + torch.eye(seq_len).to(attn_fused.device)
-                attn_fused = F.normalize(attn_fused, p=1, dim=-1)
+            for layer_attns in attentions:
+                processed_chunks = []
+                
+                for a in layer_attns:
+                    a_gpu = a.to(math_device)
+                    # Collapse heads immediately!
+                    attn_chunk = a_gpu.mean(dim=1, keepdim=True)
+                    processed_chunks.append(attn_chunk)
+                    del a_gpu
+                    
+                stitched_attn = stitch_chunks_to_matrix(processed_chunks)
+                attn_fused = stitched_attn.squeeze(0).squeeze(0)
+                
+                attn_fused = attn_fused + torch.eye(total_seq_len, device=math_device)
+                attn_fused = torch.nn.functional.normalize(attn_fused, p=1, dim=-1)
+                
                 rollout = torch.matmul(attn_fused, rollout)
+                
+                del stitched_attn, attn_fused
+                torch.cuda.empty_cache()
 
         return rollout
     
+
     def get_raw_attributions(self, image,
                             text,
-                            target_indices: Optional[int | List[int]],
+                            target_indices: Optional[int | List[int]] = None,
                             average=False,
                             **kwargs
                             ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -177,10 +203,6 @@ class RolloutExplainer(BaseExplainer):
         
         inputs = self.wrapper.get_inputs(image, text)
 
-        # full_ids = kwargs.get("full_ids", None) # (seq_len,)
-        # if full_ids is None:
-        #     raise ValueError("You should pass the generated_ids tensor")
-        
         pred_results = kwargs.get("pred_results", None)
         if pred_results is None:
             pred_results = self.wrapper.predict(inputs=inputs,
@@ -192,6 +214,19 @@ class RolloutExplainer(BaseExplainer):
         # Define the indices of the answers tokens and visual tokens 
         t_start = inputs["input_ids"].shape[1]
         t_end = full_ids.shape[-1]
+        num_ans_tokens = t_end - t_start
+
+        # --- DYNAMIC INDICES RESOLUTION ---
+        if target_indices is None:
+            indices_to_compute = list(range(num_ans_tokens))
+        elif isinstance(target_indices, int):
+            indices_to_compute = [target_indices]
+        else:
+            indices_to_compute = target_indices
+
+        # Safety check
+        indices_to_compute = [idx for idx in indices_to_compute if idx < num_ans_tokens]
+
 
         inputs["input_ids"] = full_ids.clone().unsqueeze(0)  # (batch, seq_len)
         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
@@ -203,11 +238,14 @@ class RolloutExplainer(BaseExplainer):
                 outputs = self.model(**inputs, output_attentions=True)
                 logits = outputs.logits[:, t_start-1:t_end-1, :] # (1, num_ans_tokens, vocab_size)
 
-                new_ids = full_ids[t_start:t_end] #.unsqueeze(0).unsqueeze(-1) # (1, num_ans_tokens, 1)
+                new_ids = full_ids[t_start:t_end] 
                 new_ids = new_ids.unsqueeze(0).unsqueeze(-1)
 
                 target_logits = logits.gather(dim=-1, index=new_ids).squeeze(-1) # (1, num_ans_tokens)
-                answer_score = target_logits.sum()
+                
+                # --- TARGETED GRADIENT FIX ---
+                # Only compute gradients for the specific tokens we care about!
+                answer_score = target_logits[0, indices_to_compute].sum()
 
                 self.model.zero_grad()
                 answer_score.backward(retain_graph=False)
@@ -226,9 +264,6 @@ class RolloutExplainer(BaseExplainer):
 
 
         ## Compute the final attribution
-
-        # Token attribution        
-        # Create Modality Masks
         image_token_id = self.model.config.image_token_id
         is_image_mask = (full_ids == image_token_id)
         is_image_mask = is_image_mask.cpu()
@@ -238,23 +273,23 @@ class RolloutExplainer(BaseExplainer):
         final_text_mask = is_text_mask & prompt_mask
         final_image_mask = is_image_mask & prompt_mask
 
+        # --- SUBSETTING FIX ---
+        # Map the relative answer indices to absolute row positions in the rollout matrix
+        abs_target_indices = [t_start -1 + idx for idx in indices_to_compute]
 
-        token_attribution = t_rollout[t_start:t_end, prompt_mask]
+        # Token attribution: (num_targets, num_prompt_tokens)
+        token_attribution = t_rollout[abs_target_indices][:, prompt_mask]
 
         if average:
-            # Average across the generated sentence to get one score per prompt word
-            # Shape: [Num_Prompt_Tokens]
             token_attribution = token_attribution.mean(dim=0)
 
-        # Image attribution
-        # Slice the LLM attention (Shape: [Num_Generated_Tokens, Num_Image_Tokens])
-        text_to_image_attn = t_rollout[t_start:t_end, final_image_mask]
+        # Image attribution: (num_targets, num_image_tokens)
+        text_to_image_attn = t_rollout[abs_target_indices][:, final_image_mask]
     
         model_type = self.wrapper.model.config.model_type.lower()
 
         if "internvl" in model_type:
             pixel_values = inputs.get("pixel_values")
-            # Fuse and Upsample dynamically
             pixel_attribution = self._fuse_and_upsample_internvl(
                 text_to_image_attn=text_to_image_attn,
                 v_rollout=v_rollout,
@@ -264,17 +299,13 @@ class RolloutExplainer(BaseExplainer):
         elif "qwen" in model_type:
             text_to_vit_attn = align_llm_visuals_to_pixels(text_to_image_attn, inputs,
                                                            config=self.wrapper.model.config)
-            
             pixel_attribution = torch.matmul(text_to_vit_attn, v_rollout)
         
         elif "llava" in model_type:
-            # 1. Strip the CLS token from the ViT Rollout if it exists
-            # v_rollout goes from (577, 577) -> (576, 576)
             if v_rollout.shape[-1] == text_to_image_attn.shape[-1] + 1:
                 v_rollout = v_rollout[1:, 1:]
             
             patch_attribution = torch.matmul(text_to_image_attn, v_rollout)
-
             pixel_attribution = align_llm_visuals_to_pixels(patch_attribution, inputs,
                                                            config=self.wrapper.model.config)
 

@@ -37,10 +37,10 @@ class CaptumExplainer(BaseExplainer):
         return integrad_kwargs
     
     def get_raw_attributions(self,
-                             image,
-                             text,
-                             target_indices: Optional[int | List[int]],
-                             **kwargs,
+                            image,
+                            text,
+                            target_indices: Optional[int | List[int]] = None,
+                            **kwargs,
                             ) -> Tuple[torch.Tensor, torch.Tensor]:
         inputs = self.wrapper.get_inputs(image, text)
 
@@ -64,11 +64,26 @@ class CaptumExplainer(BaseExplainer):
                                             )
         new_ids = pred_results["new_ids"]
         seq_len = len(new_ids)
-        # target_token = new_ids[target_indices].cpu().numpy().tolist()
+
+        # --- DYNAMIC INDICES RESOLUTION ---
+        if target_indices is None:
+            indices_to_compute = list(range(seq_len))
+        elif isinstance(target_indices, int):
+            indices_to_compute = [target_indices]
+        else:
+            indices_to_compute = target_indices
+
+        # Safety check: prevent out-of-bounds crashes if target_indices are larger than generated sequence
+        indices_to_compute = [idx for idx in indices_to_compute if idx < seq_len]
+
+        if not indices_to_compute:
+            print("[!] Warning: No valid target_indices found within the generated sequence length.")
 
         token_attrs = []
         pixel_attrs = []
-        for step_idx in range(seq_len):
+        
+        # --- ITERATE ONLY OVER REQUESTED INDICES ---
+        for step_idx in indices_to_compute:
             target_token = new_ids[step_idx].item()
 
             # --- DYNAMIC CONTEXT BUILDING ---
@@ -96,7 +111,6 @@ class CaptumExplainer(BaseExplainer):
                                                                 extra_mask],
                                                            dim=1)
                 
-            
             baselines = None
             if use_baselines:
                 token_reference = TokenReferenceBase(
@@ -135,8 +149,12 @@ class CaptumExplainer(BaseExplainer):
             token_attrs.append(token_attr)
             pixel_attrs.append(pixel_attr)
 
-        token_attrs = torch.cat(token_attrs, dim=0) # (seq_len, input_ids.shape[-1], hidden_dim)
-        pixel_attrs = torch.stack(pixel_attrs, dim=0) # (seq_len, num_pixels, hidden_dim)
+        # --- SAFELY HANDLE EMPTY RESULTS ---
+        # if not token_attrs:
+        #     return None, None
+
+        token_attrs = torch.cat(token_attrs, dim=0) # (num_targets, input_ids.shape[-1], hidden_dim)
+        pixel_attrs = torch.stack(pixel_attrs, dim=0) # (num_targets, num_pixels, hidden_dim)
 
         token_attrs = token_attrs.sum(-1)
 
@@ -151,5 +169,5 @@ class CaptumExplainer(BaseExplainer):
         else:
             pixel_attrs = pixel_attrs.sum(dim=-3).sum(dim=1)
         
-
         return token_attrs, pixel_attrs
+    

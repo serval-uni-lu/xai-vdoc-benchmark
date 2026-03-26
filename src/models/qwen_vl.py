@@ -5,13 +5,13 @@ from functools import partial
 
 import torch
 import torch.nn as nn
-from torch.nn import Dropout
+from transformers import BitsAndBytesConfig
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 import transformers.models.qwen2_5_vl.modeling_qwen2_5_vl as modeling_qwen2_5_vl
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLMLP
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from lxt.efficient.patches import patch_method, patch_attention
-from lxt.efficient.patches import rms_norm_forward, gated_mlp_forward, dropout_forward
+from lxt.efficient.patches import rms_norm_forward, gated_mlp_forward, dropout_forward, layer_norm_forward, non_linear_forward
 
 from src.models.base import BaseVLMWrapper
 
@@ -68,10 +68,13 @@ class QwenVLWrapper(BaseVLMWrapper):
 
     def get_patch_map(self) -> Dict[Any, Any]:
         attnLRP = {
-                Qwen2_5_VLMLP: partial(patch_method, gated_mlp_forward),
+                nn.GELU: partial(patch_method, non_linear_forward, keep_original=True),
+                modeling_qwen2_5_vl.Qwen2_5_VLMLP: partial(patch_method, gated_mlp_forward),
+                modeling_qwen2_5_vl.Qwen2MLP: partial(patch_method, gated_mlp_forward),
                 Qwen2RMSNorm: partial(patch_method, rms_norm_forward),
-                # Qwen2_5_VLRMSNorm: partial(patch_method, rms_norm_forward),
-                Dropout: partial(patch_method, dropout_forward),
+                nn.LayerNorm: partial(patch_method, layer_norm_forward),
+                # modeling_qwen2_5_vl.Qwen2_5_VLRMSNorm: partial(patch_method, rms_norm_forward),
+                nn.Dropout: partial(patch_method, dropout_forward),
                 modeling_qwen2_5_vl: patch_attention,
             }
         return attnLRP
@@ -225,3 +228,20 @@ def patch_vision_forward(
         attn_output = attn_output.reshape(seq_length, -1).contiguous()
         attn_output = self.proj(attn_output)
         return attn_output
+
+def load_model(model_id="Qwen/Qwen2.5-VL-3B-Instruct",
+                attn_implementation=None,
+                gpu_node=0):
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        dtype=torch.bfloat16,
+        device_map=f"cuda:{gpu_node}",
+        attn_implementation=attn_implementation,
+    )
+    return model, processor
