@@ -1,0 +1,7 @@
+name: "AtMan"
+class: "AtManExplainer"
+requires_attention: True
+kwargs:
+  batch_size: 16
+  conceptual_threshold: None
+

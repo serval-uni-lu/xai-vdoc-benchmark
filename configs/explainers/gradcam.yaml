@@ -1,0 +1,6 @@
+name: "GradCAM"
+class: "LLaVACAMExplainer"
+requires_attention: False
+kwargs:
+  num_samples: 1
+  token_wise: True

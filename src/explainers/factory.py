@@ -1,0 +1,45 @@
+import yaml
+
+from src.models import BaseVLMWrapper
+from src.explainers import (CaptumExplainer, LXTExplainer, TAMExplainer,
+                            RolloutExplainer, LLaVACAMExplainer, RandomExplainer)
+
+def load_yaml(file_path):
+    with open(file_path, 'r') as f:
+        return yaml.safe_load(f)
+
+def get_explainer(explainer_yaml_path: str,
+                  model_wrapper: BaseVLMWrapper,
+                  model_config: dict):
+    """Dynamically instantiates an explainer from a YAML config."""
+    
+    config = load_yaml(explainer_yaml_path)
+    class_name = config["class"]
+    
+    # --- THE SAFE KWARGS FIX ---
+    kwargs = config.get("kwargs") or {}
+    
+    # Dynamic Dependency Injection (e.g., LLaVACAM)
+    if "CAM" in class_name:
+        if "cam_target_layer" not in model_config:
+            raise ValueError(f"Model config must provide 'cam_target_layer' for {class_name}")
+        kwargs["target_layer_name"] = model_config["cam_target_layer"]
+        
+    registry = {
+        "CaptumExplainer": CaptumExplainer,
+        "LXTExplainer": LXTExplainer,
+        "TAMExplainer": TAMExplainer,
+        "RolloutExplainer": RolloutExplainer,
+        "LLaVACAMExplainer": LLaVACAMExplainer,
+        "RandomExplainer": RandomExplainer,
+    }
+    
+    if class_name not in registry:
+        raise ValueError(f"Unknown explainer class: {class_name}")
+        
+    ExplainerClass = registry[class_name]
+    
+    # Because kwargs is guaranteed to be a dict, **kwargs will safely unpack as empty 
+    # if there were no arguments!
+    return ExplainerClass(model_wrapper, **kwargs), config["name"]
+

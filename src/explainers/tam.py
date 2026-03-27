@@ -14,12 +14,12 @@ class TAMExplainer(BaseExplainer):
                  model_wrapper: BaseVLMWrapper):
         super().__init__(model_wrapper)
 
-    def get_raw_attributions(self,
-                            image,
-                            text: str,
-                            target_indices: Optional[int | List[int]] = None,
-                            **kwargs
-                            ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def attribute(self,
+                image,
+                text: str,
+                target_indices: Optional[int | List[int]] = None,
+                **kwargs
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
         
 
         inputs = self.wrapper.get_inputs(image, text)

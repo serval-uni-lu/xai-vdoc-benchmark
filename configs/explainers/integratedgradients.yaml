@@ -1,0 +1,5 @@
+name: "IntegratedGradients"
+class: "CaptumExplainer"
+requires_attention: False
+kwargs:
+  xai_name: "integrated"

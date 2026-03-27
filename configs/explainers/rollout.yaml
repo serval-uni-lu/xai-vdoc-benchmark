@@ -1,0 +1,5 @@
+name: "Rollout"
+class: "RolloutExplainer"
+requires_attention: True
+kwargs:
+  requires_grad: False

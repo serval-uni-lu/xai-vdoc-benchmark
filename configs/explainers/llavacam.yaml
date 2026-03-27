@@ -1,0 +1,7 @@
+name: "LLaVACAM"
+class: "LLaVACAMExplainer"
+requires_attention: False
+kwargs:
+  num_samples: 10
+  noise_std: 0.1
+  token_wise: True

@@ -1,0 +1,7 @@
+name: "LXT"
+class: "LXTExplainer"
+requires_attention: False
+kwargs:
+  use_zennit: False
+  token_wise: True
+

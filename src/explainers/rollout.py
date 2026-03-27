@@ -26,7 +26,8 @@ def stitch_chunks_to_matrix(chunk_list):
     return full_matrix
 
 class RolloutExplainer(BaseExplainer):
-    def __init__(self, model_wrapper: BaseVLMWrapper, requires_grad=False):
+    def __init__(self, model_wrapper: BaseVLMWrapper,
+                requires_grad=False):
         super().__init__(model_wrapper)
         self.model = self.wrapper.model
         self.requires_grad = requires_grad  # Set to True for Grad Rollout
@@ -193,12 +194,13 @@ class RolloutExplainer(BaseExplainer):
         return rollout
     
 
-    def get_raw_attributions(self, image,
-                            text,
-                            target_indices: Optional[int | List[int]] = None,
-                            average=False,
-                            **kwargs
-                            ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def attribute(self,
+                image,
+                text,
+                target_indices: Optional[int | List[int]] = None,
+                average=False,
+                **kwargs
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Runs the model, extracts attentions, and returns Vision and LLM rollouts."""
         
         inputs = self.wrapper.get_inputs(image, text)

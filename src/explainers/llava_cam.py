@@ -118,11 +118,11 @@ class LLaVACAMExplainer(BaseExplainer):
         return noisy_pil
 
     
-    def get_raw_attributions(self,
-                            image, text,
-                            target_indices: Optional[int | List[int]] = None,
-                            **kwargs
-                            ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def attribute(self,
+                image, text,
+                target_indices: Optional[int | List[int]] = None,
+                **kwargs
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
         
         # Grad-CAM
         if self.num_samples <= 1:

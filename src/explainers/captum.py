@@ -36,12 +36,12 @@ class CaptumExplainer(BaseExplainer):
         }
         return integrad_kwargs
     
-    def get_raw_attributions(self,
-                            image,
-                            text,
-                            target_indices: Optional[int | List[int]] = None,
-                            **kwargs,
-                            ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def attribute(self,
+                image,
+                text,
+                target_indices: Optional[int | List[int]] = None,
+                **kwargs,
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
         inputs = self.wrapper.get_inputs(image, text)
 
         input_ids = inputs["input_ids"]

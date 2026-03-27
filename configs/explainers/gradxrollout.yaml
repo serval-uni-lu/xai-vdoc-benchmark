@@ -1,0 +1,5 @@
+name: "GradxRollout"
+class: "RolloutExplainer"
+requires_attention: True
+kwargs:
+  requires_grad: True

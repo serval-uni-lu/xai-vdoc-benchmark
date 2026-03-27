@@ -1,0 +1,5 @@
+name: "Random"
+class: "RandomExplainer"
+requires_attention: False
+# kwargs:
+#   seed: 42

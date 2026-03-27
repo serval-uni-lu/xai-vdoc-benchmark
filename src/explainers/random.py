@@ -13,13 +13,13 @@ class RandomExplainer(BaseExplainer):
     def __init__(self, model_wrapper: 'BaseVLMWrapper'):
         super().__init__(model_wrapper)
 
-    def get_raw_attributions(self,
-                             image,
-                             text: str,
-                             target_indices: Optional[int | List[int]] = None,
-                             seed: int = 42,
-                             **kwargs
-                             ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def attribute(self,
+                image,
+                text: str,
+                target_indices: Optional[int | List[int]] = None,
+                seed: int = 42,
+                **kwargs
+                ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generates random attention maps for Image and Text.
         """

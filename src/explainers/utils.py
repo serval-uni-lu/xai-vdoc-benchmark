@@ -1,5 +1,8 @@
 import math
 from typing import List, Optional, Dict, Any
+import json
+import string
+
 import torch
 from torch import Tensor
 import torch.nn.functional as F
@@ -318,9 +321,9 @@ def align_attribution_to_patches(
     
     # 2. Extract the target grid dimensions from Qwen's metadata
     # image_grid_thw is usually [temporal (1), grid_h, grid_w]
-    grid_h = image_grid_thw[0, 1].item()
-    grid_w = image_grid_thw[0, 2].item()
-    num_patches = grid_h * grid_w
+    grid_h = int(image_grid_thw[0, 1].item())
+    grid_w = int(image_grid_thw[0, 2].item())
+    num_patches = int(grid_h * grid_w)
 
     # 3. Add dummy channel dim for PyTorch pooling functions: (N, C, H, W)
     attr_4d = high_res_attr.unsqueeze(1).float() 
@@ -433,3 +436,38 @@ def create_semantic_mask_robust(input_ids: torch.Tensor,
         mask = torch.ones_like(mask)
         
     return mask
+
+
+def save_to_jsonl(data: dict, filepath: str):
+    """Appends a dictionary as a JSON line to a file."""
+    with open(filepath, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(data) + '\n')
+
+def get_decision_token_index(new_ids,
+                             text_answer,
+                             tokenizer) -> int | None:
+    """
+    Finds the exact index of the 'yes' or 'no' token in the generated sequence.
+    """
+    text_lower = text_answer.lower()
+    
+    # Fast check: If the model didn't even say yes or no, return None immediately
+    if "yes" not in text_lower and "no" not in text_lower:
+        return None 
+        
+    # Ensure new_ids is a flat 1D list/tensor
+    if new_ids.dim() > 1:
+        new_ids = new_ids[0]
+        
+    # Find the exact token index
+    for idx, tok_id in enumerate(new_ids):
+        # Decode just this single token
+        word = tokenizer.decode(tok_id).strip().lower()
+        # Remove punctuation like 'yes.' or 'no,'
+        word = word.translate(str.maketrans('', '', string.punctuation))
+        
+        if word in ["yes", "no"]:
+            return idx # Found it! Return as a list for target_indices
+            
+    return None # Fallback
+

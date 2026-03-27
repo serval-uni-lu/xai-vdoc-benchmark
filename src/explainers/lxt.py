@@ -9,7 +9,7 @@ from lxt.efficient import monkey_patch, monkey_patch_zennit
 
 from src.explainers import BaseExplainer
 from src.models import BaseVLMWrapper
-from src.models.factory import create_model_wrapper
+from src.models.factory import load_vlm
 
 class LXTExplainer(BaseExplainer):
     def __init__(self,
@@ -70,10 +70,18 @@ class LXTExplainer(BaseExplainer):
             # We use your factory from before
             print(f"[*] Reloading patched model: {model_id}")
             device = self.wrapper.device
-            del self.wrapper
             
-            self.wrapper = create_model_wrapper(model_id,
-                                           vlm_type=vlm_type)
+
+            # Retrieve the stored YAML config
+            stored_config = getattr(self.wrapper, "model_config", None)
+            if stored_config is None:
+                raise RuntimeError("LXT requires model_config to be stored on the wrapper to reload.")
+                
+            del self.wrapper
+            self.wrapper = load_vlm(model_config=stored_config,
+                                    attn_implementation=None,
+                                    )
+            self.wrapper.model_config = stored_config
             self.wrapper.to_device(device)
             torch.cuda.empty_cache()
             
@@ -122,12 +130,12 @@ class LXTExplainer(BaseExplainer):
             zennit_comp.register(model)
         return zennit_comp
 
-    def get_raw_attributions(self,
-                             image,
-                             text: str,
-                             target_indices: Optional[int | List[int]] = None,
-                             **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-        
+    def attribute(self,
+                image,
+                text: str,
+                target_indices: Optional[int | List[int]] = None,
+                **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+
         # 1. SETUP PRISTINE INPUTS
         inputs = self.wrapper.get_inputs(image, text)
 
