@@ -14,15 +14,17 @@ dependencies = [
     "fitz>=0.0.1.dev2",
     "ipykernel>=7.1.0",
     "ipywidgets>=8.1.8",
+    "lightgbm>=4.6.0",
     "lxt>=2.1",
     "nltk>=3.9.2",
     "numpy==2.3.5",
     "opencv-contrib-python>=4.13.0.92",
     "pycocotools>=2.0.11",
+    "ruff>=0.15.8",
     "seaborn>=0.13.2",
     "sentence-transformers>=5.2.2",
-    "shapiq>=1.4.1",
     "wandb>=0.25.0",
+    "xgboost>=3.2.0",
 ]
 
 [dependency-groups]

@@ -1,12 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any
+
 
 class BaseMetric(ABC):
     def __init__(self, name: str):
         self.name = name
 
     @abstractmethod
-    def compute(self, wrapper, sample: Dict[str, Any], xai_result: Dict[str, Any]) -> Dict[str, float]:
+    def compute(
+        self, wrapper, sample: dict[str, Any], xai_result: dict[str, Any]
+    ) -> dict[str, float]:
         """
         Args:
             wrapper: The BaseVLMWrapper (for metrics that need to run the model).

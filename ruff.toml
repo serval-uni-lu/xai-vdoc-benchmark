@@ -1,0 +1,36 @@
+# Exclude standard junk directories, but DO NOT exclude "tests"
+exclude = [
+    ".git", ".mypy_cache", ".ruff_cache", ".venv", "venv", "__pycache__", "build", "dist", "datasets", "config",
+    "notebooks", "tests", "site-packages", ".vscode", ".ipynb_checkpoints",
+]
+
+
+# 120 is the modern standard for ML (88 is too short for long tensor shapes)
+line-length = 120
+indent-width = 4
+target-version = "py312" # Adjust to match your actual Python version!
+
+[lint]
+select = [
+    "E", "F",  # Essential Python errors and syntax
+    "I",       # Auto-sort imports
+    "B",       # Bugbear: Catch sneaky bugs
+    "C4",      # Comprehensions: Make list/dict creations faster
+    "SIM",     # Simplify: Help write cleaner logic
+    "NPY",     # Numpy best practices
+    "UP",      # pyupgrade: Auto-upgrades old Python syntax to modern syntax
+]
+
+ignore = []
+
+# Allow Ruff to automatically fix everything it can when you run `ruff check --fix`
+fixable = ["ALL"]
+
+# Ignore unused variables if you name them with an underscore (e.g., `_`, `_dummy`)
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

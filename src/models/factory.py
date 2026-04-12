@@ -1,20 +1,17 @@
-from typing import Optional, Dict, Any
+from typing import Any
+
 import torch
 from transformers import (
-    AutoProcessor, 
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
+    AutoProcessor,
+    BitsAndBytesConfig,
     LlavaForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
-    BitsAndBytesConfig
 )
 
-from src.models import (
-    BaseVLMWrapper,
-    QwenVLWrapper,
-    InternVLWrapper,
-    LlavaWrapper
-)
+from src.models import BaseVLMWrapper, InternVLWrapper, LlavaWrapper, QwenVLWrapper
+
 
 class VLMType:
     QWEN2_5_VL = "qwen2_5_vl"
@@ -23,7 +20,7 @@ class VLMType:
 
 
 def load_vlm(
-    model_config: Dict[str, Any],
+    model_config: dict[str, Any],
     attn_implementation: str | None = None,
     gpu_node: int = 0,
     output_attentions: bool = False,
@@ -55,26 +52,33 @@ def load_vlm(
     # 3. Load Processor
     try:
         processor = AutoProcessor.from_pretrained(
-            model_id, 
-            trust_remote_code=trust_remote
+            model_id, trust_remote_code=trust_remote
         )
+        if vlm_type == VLMType.INTERNVL:
+            # Reduce the number of tiles to avoid VRAM and GPU overcomsumption
+            processor.image_processor.max_patches = 2
+
     except Exception as e:
         raise ValueError(f"Failed to load processor for {model_id}: {e}")
-    
+
     # 4. Load Model
     try:
         if vlm_type in [VLMType.QWEN2_5_VL, "qwenvl"]:
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_id, **load_kwargs
+            )
         elif vlm_type == VLMType.INTERNVL:
             model = AutoModelForImageTextToText.from_pretrained(model_id, **load_kwargs)
         elif vlm_type == VLMType.LLAVA:
-            model = LlavaForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
+            model = LlavaForConditionalGeneration.from_pretrained(
+                model_id, **load_kwargs
+            )
         else:
             print(f"[!] Warning: Falling back to AutoModelForCausalLM for {vlm_type}")
             model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
     except Exception as e:
         raise ValueError(f"Failed to load model for {model_id}: {e}")
-    
+
     model.eval()
 
     # 5. Handle Attention Flags (Specifically for Rollout on LLaVA)
@@ -86,27 +90,30 @@ def load_vlm(
     # 6. Dispatch to Correct Wrapper
     if vlm_type in [VLMType.QWEN2_5_VL, "qwenvl"]:
         return QwenVLWrapper(model, processor)
-    
+
     elif vlm_type == VLMType.INTERNVL:
         return InternVLWrapper(model, processor)
-    
+
     elif vlm_type == VLMType.LLAVA:
         return LlavaWrapper(model, processor)
 
     else:
-        raise NotImplementedError(f"Wrapper for {vlm_type} is defined but not instantiated in factory.")
+        raise NotImplementedError(
+            f"Wrapper for {vlm_type} is defined but not instantiated in factory."
+        )
+
 
 # def create_model_wrapper(
 #     model_id: str,
 #     vlm_type: str,
 #     config: Optional[LoaderConfig] = None,
 # ) -> BaseVLMWrapper:
-    
+
 #     if config is None:
 #         config = LoaderConfig()
 
 #     print(f"[*] Inspecting model architecture: {model_id}...")
-    
+
 
 #     # Prepare Loading Arguments
 #     load_kwargs = {
@@ -120,14 +127,14 @@ def load_vlm(
 #     # Load Processor (Generic)
 #     try:
 #         processor = AutoProcessor.from_pretrained(
-#             model_id, 
+#             model_id,
 #             trust_remote_code=config.trust_remote_code
 #         )
 #     except Exception as e:
 #         # Some new models (like Qwen2.5-VL) might need specific handling if AutoProcessor fails
 #         # but usually AutoProcessor is sufficient.
 #         raise ValueError(f"Failed to load processor for {model_id}: {e}")
-    
+
 #     try:
 #         if vlm_type == VLMType.QWEN2_5_VL:
 #             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id,
@@ -142,19 +149,18 @@ def load_vlm(
 #             model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
 #     except Exception as e:
 #         raise ValueError(f"Failed to load model for {model_id}: {e}")
-    
+
 #     model.eval()
-    
+
 #     # 5. Dispatch to Correct Wrapper
 #     if vlm_type == VLMType.QWEN2_5_VL:
 #         return QwenVLWrapper(model, processor)
-    
+
 #     elif vlm_type == VLMType.INTERNVL3_5:
 #         return InternVLWrapper(model, processor)
-    
+
 #     elif vlm_type == VLMType.LLAVA:
 #         return LlavaWrapper(model, processor)
 
 #     else:
 #         raise NotImplementedError(f"Wrapper for {vlm_type} is defined in Enum but not instantiated in factory.")
-    

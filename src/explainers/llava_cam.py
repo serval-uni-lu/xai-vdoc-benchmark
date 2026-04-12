@@ -1,47 +1,46 @@
 import contextlib
 
-from typing import Optional, List, Tuple
-from PIL import Image
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
+from PIL import Image
 
-from src.models import BaseVLMWrapper
 from src.explainers import BaseExplainer
 from src.explainers.utils import align_llm_visuals_to_pixels
+from src.models import BaseVLMWrapper
 
 
 class LLaVACAMExplainer(BaseExplainer):
-    def __init__(self, 
-                 model_wrapper: BaseVLMWrapper,
-                 target_layer_name: str,
-                 num_samples: int=10,
-                 noise_std: float=.1,
-                 token_wise = True,
-                 ):
+    def __init__(
+        self,
+        model_wrapper: BaseVLMWrapper,
+        target_layer_name: str,
+        num_samples: int = 10,
+        noise_std: float = 0.1,
+        token_wise=True,
+    ):
         super().__init__(model_wrapper)
-        
+
         self.target_layer_name = target_layer_name
         self.num_samples = num_samples
         self.noise_std = noise_std
         self.token_wise = token_wise
 
-
     def save_feature_maps(self, module, input, output):
         """Hook to save the feature maps during forward pass."""
         self.feature_maps = output
-        #output.retain_grad()
+        # output.retain_grad()
 
     def save_gradients(self, module, grad_input, grad_output):
         """Hook to save the gradients during backward pass."""
         self.gradients = grad_output[0].detach()
-    
+
     def register_hooks(self):
         for name, module in self.wrapper.model.named_modules():
             if self.target_layer_name in name:
                 module.register_forward_hook(self.save_feature_maps)
                 module.register_backward_hook(self.save_gradients)
-    
+
     def clear_hooks(self):
         self.feature_maps = None
         self.gradients = None
@@ -51,32 +50,31 @@ class LLaVACAMExplainer(BaseExplainer):
     @contextlib.contextmanager
     def manage_explainability_state(self):
         """
-        Temporarily patches the model and attaches hooks. 
+        Temporarily patches the model and attaches hooks.
         Guarantees complete restoration upon exit.
         """
-        
+
         # Register hooks to capture activations (forward) and gradients (backward)
         self.register_hooks()
-        
+
         try:
             # Yield control back to the main function
-            yield 
+            yield
         finally:
             # This runs NO MATTER WHAT (even if your math throws an error)
             self.clear_hooks()
-        
+
     def compute_cam(self, mask):
         """Applies Grad-CAM channel-weighting to the selected tokens."""
         # Slice the sequence down to just the tokens we care about
         # Shape: [num_selected_tokens, Channels]
 
         if self.gradients is None or self.feature_maps is None:
-            raise RuntimeError(f"Gradients or Feature maps were dropped/not initialized")
-
+            raise RuntimeError("Gradients or Feature maps were dropped/not initialized")
 
         activations = self.feature_maps
         gradients = self.gradients
-        
+
         feats = activations[0, mask, :]
         grads = gradients[0, mask, :]
 
@@ -98,7 +96,7 @@ class LLaVACAMExplainer(BaseExplainer):
         # # Normalize to [0, 1]
         # if cam.max() > 0:
         #     cam = cam / cam.max()
-            
+
         return cam.detach().cpu()
 
     def _add_noise(self, image, noise_std):
@@ -117,13 +115,10 @@ class LLaVACAMExplainer(BaseExplainer):
 
         return noisy_pil
 
-    
-    def attribute(self,
-                image, text,
-                target_indices: Optional[int | List[int]] = None,
-                **kwargs
-                ) -> Tuple[torch.Tensor, torch.Tensor]:
-        
+    def attribute(
+        self, image, text, target_indices: int | list[int] | None = None, **kwargs
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+
         # Grad-CAM
         if self.num_samples <= 1:
             smooth_token_cam, smooth_pixel_cam = self.llava_cam(
@@ -142,39 +137,42 @@ class LLaVACAMExplainer(BaseExplainer):
             t_cam, p_cam = self.llava_cam(
                 image=noisy_img, text=text, target_indices=target_indices, **kwargs
             )
-            
+
             smooth_token_cam += t_cam
             smooth_pixel_cam += p_cam
-        
+
         # Average
         smooth_token_cam /= self.num_samples
         smooth_pixel_cam /= self.num_samples
 
         return smooth_token_cam.float(), smooth_pixel_cam.float()
 
-    def llava_cam(self,
-            image,
-            text: str,
-            target_indices: Optional[int | List[int]] = None,
-            **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    def llava_cam(
+        self,
+        image,
+        text: str,
+        target_indices: int | list[int] | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generates raw attributions dynamically for specified targets.
         """
         inputs = self.wrapper.get_inputs(image, text)
-        
-        pred_results = kwargs.get("pred_results", None)
+
+        pred_results = kwargs.get("pred_results")
         if pred_results is None:
-            pred_results = self.wrapper.predict(inputs=inputs,
-                                            return_logits=False,
-                                            **kwargs,
-                                            )
+            pred_results = self.wrapper.predict(
+                inputs=inputs,
+                return_logits=False,
+                **kwargs,
+            )
         full_ids = pred_results["full_ids"]
-        
-        # Define the indices of the answers tokens and visual tokens 
+
+        # Define the indices of the answers tokens and visual tokens
         t_start = inputs["input_ids"].shape[1]
         t_end = full_ids.shape[-1]
         gen_len = t_end - t_start
-                
+
         # --- DYNAMIC INDICES RESOLUTION ---
         if target_indices is None:
             indices_to_compute = list(range(gen_len))
@@ -186,34 +184,39 @@ class LLaVACAMExplainer(BaseExplainer):
         # Safety check
         indices_to_compute = [idx for idx in indices_to_compute if idx < gen_len]
 
-
         inputs["input_ids"] = full_ids.clone()  # (batch, seq_len)
         if inputs["input_ids"].ndim == 1:
             inputs["input_ids"] = inputs["input_ids"].unsqueeze(0)
-            
+
         inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
 
         image_token_id = self.wrapper.model.config.image_token_id
 
         # Boolean Masks (flattened to 1D)
         full_ids_1d = inputs["input_ids"].squeeze()
-        prompt_mask = torch.arange(full_ids_1d.size(-1), device=full_ids_1d.device) < t_start
-        
-        is_image_mask = (full_ids_1d == image_token_id)
+        prompt_mask = (
+            torch.arange(full_ids_1d.size(-1), device=full_ids_1d.device) < t_start
+        )
+
+        is_image_mask = full_ids_1d == image_token_id
         is_text_mask = ~is_image_mask
 
         final_text_mask = prompt_mask
         final_image_mask = is_image_mask & prompt_mask
-        
+
         with self.manage_explainability_state():
             outputs = self.wrapper.model(
-                **inputs, 
-                use_cache=False # Crucial for backward hooks
+                **inputs,
+                use_cache=False,  # Crucial for backward hooks
             )
-            logits = outputs.logits[:, t_start-1:t_end-1, :] # (1, num_ans_tokens, vocab_size)
+            logits = outputs.logits[
+                :, t_start - 1 : t_end - 1, :
+            ]  # (1, num_ans_tokens, vocab_size)
 
             new_ids = full_ids[t_start:t_end].unsqueeze(0).unsqueeze(-1)
-            target_logits = logits.gather(dim=-1, index=new_ids).squeeze(-1) # (1, num_ans_tokens)
+            target_logits = logits.gather(dim=-1, index=new_ids).squeeze(
+                -1
+            )  # (1, num_ans_tokens)
 
             if self.token_wise:
                 token_attributions = []
@@ -225,7 +228,9 @@ class LLaVACAMExplainer(BaseExplainer):
                     target_logits[:, i].backward(retain_graph=True)
 
                     if self.gradients is None:
-                        raise RuntimeError(f"Gradients were dropped at iteration {i}. Check layer name: {self.target_layer_name}")
+                        raise RuntimeError(
+                            f"Gradients were dropped at iteration {i}. Check layer name: {self.target_layer_name}"
+                        )
 
                     # Compute CAM for text and image
                     tok_attr = self.compute_cam(final_text_mask)
@@ -235,9 +240,13 @@ class LLaVACAMExplainer(BaseExplainer):
 
                     token_attributions.append(tok_attr)
                     pixel_attributions.append(pix_attr)
-                
-                token_attribution = torch.stack(token_attributions, dim=0) # [num_targets, num_text_tokens]
-                pixel_attribution = torch.stack(pixel_attributions, dim=0) # [num_targets, num_image_tokens]
+
+                token_attribution = torch.stack(
+                    token_attributions, dim=0
+                )  # [num_targets, num_text_tokens]
+                pixel_attribution = torch.stack(
+                    pixel_attributions, dim=0
+                )  # [num_targets, num_image_tokens]
 
             else:
                 # --- AGGREGATED TARGETS: Only sum the requested indices ---
@@ -249,7 +258,8 @@ class LLaVACAMExplainer(BaseExplainer):
                 pixel_attribution = self.compute_cam(final_image_mask).unsqueeze(0)
 
         # Map back to 2D/3D pixel space
-        pixel_attribution = align_llm_visuals_to_pixels(pixel_attribution, inputs, config=self.wrapper.model.config)
+        pixel_attribution = align_llm_visuals_to_pixels(
+            pixel_attribution, inputs, config=self.wrapper.model.config
+        )
 
         return token_attribution, pixel_attribution
-

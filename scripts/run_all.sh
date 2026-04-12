@@ -16,15 +16,25 @@ MODELS=(
 )
 
 DATASETS=(
-    "configs/datasets/repope.yaml"
+    #"configs/datasets/repope.yaml"
+    "configs/datasets/repope_oracle.yaml"
+    #"configs/datasets/coco.yaml"
+)
+
+OUTPUT_DIR=(
+    "logs/results_exp_1_1"
 )
 
 # Pass all explainers as a single string separated by spaces
-# EXPLAINERS="random rollout llavacam lxt tam"
-# EXPLAINERS="tam gradcam gradxrollout integratedgradients"
-EXPLAINERS="random inputxgradients llavacam rollout lxt"
+# EXPLAINERS="gradcam integratedgradients lxt"
+EXPLAINERS="tam inputxgradients gradxrollout " 
+# EXPLAINERS="random llavacam rollout"
 
-GPU_ID=1
+# EXPLAINERS="tam integratedgradients llavacam lxt"
+# EXPLAINERS="random rollout inputxgradients gradxrollout gradcam tam integratedgradients llavacam lxt"
+EXPLAINERS="rollout"
+
+GPU_ID=2
 
 # 2. Nested loops to run every combination
 for MODEL in "${MODELS[@]}"; do
@@ -36,12 +46,14 @@ for MODEL in "${MODELS[@]}"; do
         
         # 3. Execute the Python script
         # Notice we omitted --max_samples so it runs the whole dataset!
-        python -m src.benchmark \
+        #python -m src.benchmarks.repope \
+        python -m src.benchmarks.exp_1_1 \
             --model_config "$MODEL" \
             --dataset_config "$DATASET" \
-            --explainers $EXPLAINERS \
             --gpu_id $GPU_ID \
-            # --max_samples 200  <-- Uncomment this line for a quick test run!
+            --output_dir $OUTPUT_DIR \
+            #--max_samples 2 \
+            #--explainers $EXPLAINERS
             
         echo "<<< Job Finished. Moving to next configuration..."
         sleep 5 # Give the OS a few seconds to fully flush the GPU VRAM

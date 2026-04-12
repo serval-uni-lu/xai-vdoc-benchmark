@@ -1,0 +1,3 @@
+name: "coco"
+data_path: "datasets/coco"
+batch_size: 1

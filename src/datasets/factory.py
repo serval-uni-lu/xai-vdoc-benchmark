@@ -1,11 +1,12 @@
 from torch.utils.data import DataLoader
 
-from src.datasets import POPEGroundingDataset
+from src.datasets import POPEGroundingDataset, POPEOracleDataset
 from src.datasets import COCOGroundingDataset
+
 
 def get_dataloader(dataset_config: dict):
     """
-    Dynamically loads a dataset and wraps it in a DataLoader 
+    Dynamically loads a dataset and wraps it in a DataLoader
     based on a YAML config dictionary.
     """
     # Copy the config so we can pop items safely without modifying the original
@@ -19,15 +20,16 @@ def get_dataloader(dataset_config: dict):
 
     if dataset_name == "repope":
         dataset = POPEGroundingDataset(**config_copy)
+    elif dataset_name == "repope_oracle":
+        dataset = POPEOracleDataset(**config_copy)
     elif dataset_name == "coco":
         dataset = COCOGroundingDataset(**config_copy)
     else:
         raise ValueError(f"[!] Unknown dataset name in config: {dataset_name}")
-        
+
     # VLM datasets usually return complex dicts/lists, so we use a simple collate function
-    def collate_fn_custom(batch): 
+    def collate_fn_custom(batch):
         return batch[0] if batch_size == 1 else batch
 
     dl = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn_custom)
     return dl
-

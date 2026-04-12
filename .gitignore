@@ -14,4 +14,5 @@ datasets/
 notebooks/*.py
 logs/
 !src/datasets/
+!configs/datasets/
 HF_TOKEN
