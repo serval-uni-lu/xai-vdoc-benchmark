@@ -204,3 +204,41 @@ class AntiExplainer(OracleExplainer):
         anti_pixels = 1.0 - perfect_pixels
 
         return anti_tokens, anti_pixels
+
+
+class MismatchedExplainer(OracleExplainer):
+    """
+    The Deceptive Explainer (For Experiment 1.2).
+    Generates perfect text attributions, but uses a mismatched/wrong image mask.
+    Proves that the Synergy metric catches cross-modal hallucinations.
+    """
+
+    def attribute(
+        self,
+        image,
+        text: str,
+        target_indices: int | list[int] | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        
+        # We need the CORRECT keyword to build the perfect text mask
+        keyword = kwargs.get("keyword")
+        
+        # But we pass in the DECEPTIVE/WRONG mask for the image
+        deceptive_mask_2d = kwargs.get("mismatched_mask_2d") 
+        
+        if deceptive_mask_2d is None:
+            raise ValueError("MismatchedExplainer requires 'mismatched_mask_2d'.")
+
+        # Let the Oracle do the shape-matching work, but feed it the lie!
+        perfect_tokens, wrong_pixels = super().attribute(
+            image=image, 
+            text=text, 
+            target_indices=target_indices, 
+            keyword=keyword,
+            oracle_mask_2d=deceptive_mask_2d, # <-- THE BAIT AND SWITCH
+            pred_results=kwargs.get("pred_results")
+        )
+
+        return perfect_tokens, wrong_pixels
+

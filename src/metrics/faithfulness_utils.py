@@ -1,4 +1,5 @@
 from typing import Any
+import re
 
 import torch
 import torch.nn.functional as F
@@ -38,10 +39,11 @@ def score_output(
             # Gather and mean directly on the GPU, much faster than appending to a list
             # batch_scores[b] = probs_pred[b, p].sum()
             # Normalize by length to get the average log probability per token
-            log_prob_sum = probs_pred[b, p].sum() / len(p)
+            log_prob_sum = probs_pred[b, p].sum()
 
             # 2. Convert back to raw probability space [0, 1] for Game Theory Math!
             batch_scores[b] = torch.exp(log_prob_sum)
+            #batch_scores[b] = log_prob_sum
 
     scores = batch_scores.cpu()
 
@@ -324,3 +326,130 @@ def _reshape_pixels_back_faithfulness(
                         Pixel_values shape must be 3D, 4D, or 5D."
         )
     return pert_pixels
+
+
+def get_text_mask(input_ids: torch.Tensor, model_type: str, tokenizer) -> torch.Tensor:
+    """
+    Blazing fast, model-specific mask generator.
+    Finds the exact tokens between the 'User' and 'Assistant' anchors using pure tensor math.
+    """
+    if input_ids.dim() > 1:
+        input_ids = input_ids.squeeze()
+        
+    seq_len = input_ids.shape[0]
+    valid_mask = torch.zeros(seq_len, dtype=torch.bool, device=input_ids.device)
+
+    # 1. Define Model-Specific Anchor Strings
+    # We use exactly what the processor injects. 
+    model_type = model_type.lower()
+    if "llava" in model_type:
+        user_str = "USER:"
+        asst_str = "ASSISTANT:"
+    elif "qwen" in model_type or "internvl" in model_type:
+        # Based on your logs, Qwen and InternVL both use these plain words
+        user_str = "user"
+        asst_str = "assistant"
+    else:
+        raise ValueError(f"Model type '{model_type}' not supported in fast-mask.")
+
+    # 2. Get the exact Token IDs for these anchors
+    # We do this once per batch. It correctly handles LLaVA splitting "USER:" into ["US", "ER", ":"]
+    user_ids = torch.tensor(
+        tokenizer.encode(user_str, add_special_tokens=False), 
+        device=input_ids.device
+    )
+    asst_ids = torch.tensor(
+        tokenizer.encode(asst_str, add_special_tokens=False), 
+        device=input_ids.device
+    )
+
+    user_len = len(user_ids)
+    asst_len = len(asst_ids)
+
+    # 3. Fast Tensor Search (No Strings!)
+    # We slide over the tensor to find the exact match for the anchor sequences
+    start_idx = -1
+    end_idx = -1
+
+    # Find where the 'User' anchor ends
+    for i in range(seq_len - user_len + 1):
+        if torch.equal(input_ids[i : i + user_len], user_ids):
+            start_idx = i + user_len # The question starts IMMEDIATELY AFTER the user anchor
+            break
+
+    # Find where the 'Assistant' anchor begins (Search from start_idx onwards to save time)
+    if start_idx != -1:
+        for i in range(start_idx, seq_len - asst_len + 1):
+            if torch.equal(input_ids[i : i + asst_len], asst_ids):
+                end_idx = i # The question ends IMMEDIATELY BEFORE the assistant anchor
+                break
+
+    # 4. Apply the Mask
+    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+        valid_mask[start_idx:end_idx] = True
+    else:
+        print(f"\n[!] Fast Mask Failed for {model_type}. Anchors not found in tensor.")
+        print(f"[!] Falling back to all True.")
+        valid_mask[:] = True
+
+    return valid_mask
+
+
+def find_decision_token_index(new_ids, tokenizer, choices=['a', 'b', 'c', 'd']):
+    """
+    Scans tokenized output and scores candidates based on their surrounding context.
+    Perfectly handles:
+    - "There is a bag. Answer: (a)"
+    - "Answer: a) there is a bag"
+    - "(b) Closed"
+    """
+    tokens = tokenizer.convert_ids_to_tokens(new_ids)
+    lower_choices = [str(c).lower() for c in choices]
+    
+    candidates = []
+
+    for idx, token in enumerate(tokens):
+        # Clean token for core letter extraction
+        clean_token = token.replace('Ġ', '').replace(' ', '').lower()
+        raw_chars = re.sub(r'[^a-z0-9]', '', clean_token)
+        
+        # If we found a standalone letter that matches our choices...
+        if len(raw_chars) == 1 and raw_chars in lower_choices:
+            score = 0
+            
+            # 1. Self-Context: Does the token itself contain punctuation? e.g., "(a" or "a)"
+            if '(' in token or ')' in token or '.' in token:
+                score += 2
+                
+            # 2. Previous Context: What came right before it?
+            if idx > 0:
+                prev_token = tokens[idx-1].lower()
+                # If preceded by "answer", ":", "(", or a newline, massive boost!
+                if 'answer' in prev_token or ':' in prev_token or '(' in prev_token or '\n' in prev_token:
+                    score += 3
+                    
+            # 3. Next Context: What comes right after it?
+            if idx < len(tokens) - 1:
+                next_token = tokens[idx+1].lower()
+                # If followed by ")", ".", or a newline, massive boost!
+                if ')' in next_token or '.' in next_token or '\n' in next_token:
+                    score += 3
+                    
+            # 4. Penalty: If it has ZERO structural neighbors, it's probably the word "a" in a sentence.
+            if score == 0:
+                score -= 5
+                
+            candidates.append((score, idx, token))
+
+    # Evaluate the candidates
+    if candidates:
+        # Sort by highest score first
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_idx, best_token = candidates[0]
+        
+        # As long as the best candidate isn't heavily penalized, return it!
+        if best_score > -1:
+            return best_idx, best_token
+            
+    # Fallback: If it completely hallucinated and we found nothing valid
+    return 0, tokens[0]

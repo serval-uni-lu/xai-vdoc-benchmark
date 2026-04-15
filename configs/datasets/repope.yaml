@@ -1,6 +1,6 @@
 name: "repope"
 data_path: "datasets/repope"
 pope_json_path: "datasets/repope/repope_annotations"
-pope_type: "random"
+pope_type: "all"
 coco_split: "val2014"
 batch_size: 1

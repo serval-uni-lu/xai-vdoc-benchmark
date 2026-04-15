@@ -16,6 +16,7 @@ from src.metrics.faithfulness_utils import (
     get_most_important_tokens_token,
     make_blur_baseline,
     score_output,
+    get_text_mask,
 )
 from src.models import BaseVLMWrapper
 
@@ -104,6 +105,8 @@ class FaithfulnessMetric(BaseMetric):
         pixel_attr = xai_result.get("pixel_attribution")
         tok_attr = xai_result.get("token_attribution")
 
+        
+
         # Determine how many tokens we are evaluating
         num_tokens = 1
         if pixel_attr is not None:
@@ -112,6 +115,7 @@ class FaithfulnessMetric(BaseMetric):
             num_tokens = tok_attr.shape[0]
 
         image = sample.get("image")
+        question = str(sample.get("question"))
         blur_baseline = None
         if image is not None:
             text = sample.get("text")
@@ -120,6 +124,12 @@ class FaithfulnessMetric(BaseMetric):
             blur_baseline = blurred_inpts["pixel_values"]
 
         results = {}
+
+        # Get text only mask
+        model_type = getattr(wrapper.model.config, "model_type", "").lower()
+        semantic_mask = get_text_mask(inputs["input_ids"],
+                                    model_type,
+                                    wrapper.processor.tokenizer)
 
         # --- A. Image Perturbation ---
         if pixel_attr is not None:
@@ -136,6 +146,7 @@ class FaithfulnessMetric(BaseMetric):
                 blur_baseline=blur_baseline,
                 mask_value=self.mask_value,
                 filter_keywords=self.filter_keywords,
+                
             )
 
             results["time_img_pert"] = time.perf_counter() - start_time
@@ -155,7 +166,7 @@ class FaithfulnessMetric(BaseMetric):
                 perturbation_steps=self.steps,
                 pad_token_id=self.pad_token_id,
                 special_token_ids=self.special_token_ids,
-                semantic_mask=self.semantic_mask,
+                semantic_mask=semantic_mask,
                 filter_keywords=self.filter_keywords,
             )
 
@@ -177,7 +188,7 @@ class FaithfulnessMetric(BaseMetric):
                 perturbation_steps=self.steps,
                 pad_token_id=self.pad_token_id,
                 special_token_ids=self.special_token_ids,
-                semantic_mask=self.semantic_mask,
+                semantic_mask=semantic_mask,
                 mask_value=self.mask_value,
                 blur_baseline=blur_baseline,
                 filter_keywords=self.filter_keywords,
@@ -419,7 +430,7 @@ def eval_image_perturbation_batch(
         # This matches: outputs = (outputs-blur_scores) / (og_scores-blur_scores)
         # norm_score = (current_del_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
         norm_score = (current_del_scores - blur_scores) / normalizer
-        normalized_del_scores[i] = norm_score
+        normalized_del_scores[i] = np.clip(norm_score, 0., 1.)
 
         # Compute Insertion Scores
         current_ins_scores = score_output(
@@ -435,7 +446,7 @@ def eval_image_perturbation_batch(
         # Normalize: (Current - Blur) / (Original - Blur)
         # norm_score = (current_ins_scores - blur_scores) / (baseline_scores - blur_scores + 1e-9)
         norm_score = (current_ins_scores - blur_scores) / normalizer
-        normalized_ins_scores[i] = norm_score
+        normalized_ins_scores[i] = np.clip(norm_score, 0., 1.)
 
     # Compute AUC scores
     norm_auc_del = np.trapezoid(normalized_del_scores, x=perturbation_steps, axis=0)
@@ -489,6 +500,8 @@ def eval_token_perturbation_batch(
     # --- Identify "Valid" Text Tokens ---
     # Start by only allowing perturbation where semantic_mask is True
     if semantic_mask is not None:
+        if semantic_mask.ndim == 1:
+            semantic_mask = semantic_mask.unsqueeze(0)
         valid_mask = semantic_mask.to(device).clone()
     else:
         # Fallback if no mask is provided: assume all tokens are valid
@@ -498,7 +511,7 @@ def eval_token_perturbation_batch(
         for skip_id in special_token_ids:
             # Mark positions containing visual tokens as False
             valid_mask &= input_ids != skip_id
-
+    
     # Count how many actual text tokens we have per batch
     # We take the min across batch to ensure consistent step sizes, or average.
     # For safety, let's assume batch has roughly same text length or take the first.
@@ -621,7 +634,8 @@ def eval_token_perturbation_batch(
         ).numpy()
         del_curve[i] = s_del
         # norm_del_curve[i] = (s_del - blur_scores) / (baseline_scores - blur_scores + 1e-9)
-        norm_del_curve[i] = (s_del - blur_scores) / normalizer
+        norm_del = (s_del - blur_scores) / normalizer
+        norm_del_curve[i] = np.clip(norm_del, 0., 1.)
 
         # Insertion
         s_ins = score_output(
@@ -634,7 +648,8 @@ def eval_token_perturbation_batch(
         ).numpy()
         ins_curve[i] = s_ins
         # norm_ins_curve[i] = (s_ins - blur_scores) / (baseline_scores - blur_scores + 1e-9)
-        norm_ins_curve[i] = (s_ins - blur_scores) / normalizer
+        norm_ins = (s_ins - blur_scores) / normalizer
+        norm_ins_curve[i] = np.clip(norm_ins, 0., 1.)
 
     # Compute AUC scores
     norm_auc_del = np.trapezoid(norm_del_curve, x=perturbation_steps, axis=0)
@@ -739,6 +754,8 @@ def eval_multimodal_synergy_batch(
     # --- 2. Setup Text Inputs ---
     # Start by only allowing perturbation where semantic_mask is True
     if semantic_mask is not None:
+        if semantic_mask.ndim == 1:
+            semantic_mask = semantic_mask.unsqueeze(0)
         valid_mask = semantic_mask.to(device).clone()
     else:
         # Fallback if no mask is provided: assume all tokens are valid
@@ -748,6 +765,7 @@ def eval_multimodal_synergy_batch(
         for skip_id in special_token_ids:
             # Mark positions containing visual tokens as False
             valid_mask &= input_ids != skip_id
+    
 
     # Count how many actual text tokens we have per batch
     num_valid_tokens = valid_mask.sum(dim=1).min().item()
@@ -924,7 +942,8 @@ def eval_multimodal_synergy_batch(
         # del_norm_synergy_curve[i] = del_p_joint - (del_p_img_only + del_p_txt_only - zeros_scores)
         # del_norm_synergy_curve[i] /= (normalizer_del + 1e-9)
         # del_norm_synergy_curve[i] += 1
-        del_norm_synergy_curve[i] = del_synergy / normalizer
+        del_norm = del_synergy / normalizer
+        del_norm_synergy_curve[i] = np.clip(del_norm, 0., 1.)
 
         # --- Insertion Scoring ---
 
@@ -967,7 +986,8 @@ def eval_multimodal_synergy_batch(
         # ins_synergy = ins_p_joint - (ins_p_img_only + ins_p_txt_only)
         ins_synergy_curve[i] = ins_synergy
         # ins_norm_synergy_curve[i] = ins_synergy / (normalizer_ins + 1e-9)
-        ins_norm_synergy_curve[i] = ins_synergy / normalizer
+        ins_norm = ins_synergy / normalizer
+        ins_norm_synergy_curve[i] = np.clip(ins_norm, 0., 1.)
 
     del_norm_syn_auc = np.trapezoid(
         del_norm_synergy_curve, x=perturbation_steps, axis=0
@@ -977,6 +997,11 @@ def eval_multimodal_synergy_batch(
     )
     del_syn_auc = np.trapezoid(del_synergy_curve, x=perturbation_steps, axis=0)
     ins_syn_auc = np.trapezoid(ins_synergy_curve, x=perturbation_steps, axis=0)
+
+    synergy_curve = (ins_synergy_curve + del_synergy_curve) / 2.
+    synergy_norm_curve = (ins_norm_synergy_curve + del_norm_synergy_curve) / 2.
+    synergy_norm_auc = np.trapezoid(synergy_norm_curve, x=perturbation_steps, axis=0)
+    synergy_auc = np.trapezoid(synergy_curve, x=perturbation_steps, axis=0)
 
     return {
         "del_synergy_curve": del_synergy_curve,
@@ -989,4 +1014,6 @@ def eval_multimodal_synergy_batch(
         "ins_norm_auc": ins_norm_syn_auc,
         "del_auc": del_syn_auc,
         "ins_auc": ins_syn_auc,
+        "synergy_auc": synergy_auc,
+        "synergy_norm_auc": synergy_norm_auc,
     }

@@ -191,7 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU node to use")
     
     # We highly recommend capping this at 500 for the bounds test
-    parser.add_argument("--max_samples", type=int, default=500, help="Max samples to evaluate")
+    parser.add_argument("--max_samples", type=int, default=200, help="Max samples to evaluate")
     parser.add_argument("--output_dir", type=str, default="logs/experiment_1", help="Where to save logs")
 
     args = parser.parse_args()

@@ -1,0 +1,4 @@
+name: "mmvp"
+hf_path: "MMVP/MMVP"
+split: "train"
+batch_size: 1

@@ -6,9 +6,9 @@ from .lxt import LXTExplainer
 from .random import RandomExplainer
 from .rollout import RolloutExplainer
 from .tam import TAMExplainer
-from .oracle import OracleExplainer, AntiExplainer
+from .oracle import OracleExplainer, AntiExplainer, MismatchedExplainer
 
 __all__ = ["BaseExplainer", "CaptumExplainer", "LLaVACAMExplainer",
            "LXTExplainer", "RandomExplainer", "RolloutExplainer", "RolloutExplainer",
-           "TAMExplainer", "OracleExplainer", "AntiExplainer"
+           "TAMExplainer", "OracleExplainer", "AntiExplainer", "MismatchedExplainer"
            ]

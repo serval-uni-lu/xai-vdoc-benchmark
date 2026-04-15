@@ -74,7 +74,7 @@ class XAIVisualizer:
             if tok_id in special_token_ids:
                 continue
             if semantic_mask is not None:
-                if not semantic_mask[0, i].item():
+                if not semantic_mask[i].item():
                     continue
             valid_indices.append(i)
 

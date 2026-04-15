@@ -42,13 +42,35 @@ class POPEGroundingDataset(Dataset):
             raise ValueError(f"Error: No .json files found in {self.pope_json_path}")
 
         pope_data = {}
-        print(f"Scanning {len(json_files)} POPE json files...")
+        print(f"[*] Scanning {len(json_files)} POPE json files...")
+        
+        # 1. Load the individual splits (random, popular, adversarial)
         for json_file in json_files:
             with open(json_file, "r") as f:
-                pope_type = json_file.split("pope_")[-1].split(".json")[0]
-                pope_data[pope_type] = []
+                # Extracts "random", "popular", etc., from the filename
+                split_type = json_file.split("pope_")[-1].split(".json")[0]
+                pope_data[split_type] = []
                 for line in f:
-                    pope_data[pope_type].append(json.loads(line))
+                    pope_data[split_type].append(json.loads(line))
+                    
+        # 2. Build the deduplicated "all" split
+        all_unique_items = []
+        seen_keys = set()
+        
+        for split_type, items in pope_data.items():
+            for item in items:
+                # Create a unique signature for this exact question
+                unique_key = (item["image"], item["text"])
+                
+                # If we haven't seen this question for this image yet, keep it!
+                if unique_key not in seen_keys:
+                    all_unique_items.append(item)
+                    seen_keys.add(unique_key)
+                    
+        pope_data["all"] = all_unique_items
+        
+        print(f"[*] Built 'all' split. Total unique questions: {len(all_unique_items)}")
+        
         return pope_data
 
     def __len__(self):
@@ -175,18 +197,38 @@ class POPEOracleDataset(Dataset):
 
         W, H = image.size
         pixel_oracle_mask = np.zeros((H, W), dtype=np.float32)
+        distractor_mask = np.zeros((H, W), dtype=np.float32)
+        
+        found_distractor = False
+        distractor_category = "background"
 
         for ann in anns_inst:
             cat_name = self.id2name[ann["category_id"]]
+            
+            # Build the Target Oracle Mask
             if cat_name == object_name:
                 instance_mask = self.coco_instances.annToMask(ann)
                 pixel_oracle_mask = np.maximum(pixel_oracle_mask, instance_mask)
+            
+            # Build the Deceptive Distractor Mask (Any OTHER object in the same image)
+            elif cat_name != object_name and not found_distractor:
+                distractor_mask = self.coco_instances.annToMask(ann)
+                distractor_category = cat_name
+                found_distractor = True
+
+        # Fallback: If the image ONLY has the target object (e.g., just a dog in an empty field),
+        # we mathematically invert the oracle mask to highlight the background instead.
+        if not found_distractor:
+            distractor_mask = 1.0 - pixel_oracle_mask
+            
 
 
         return {
             "image": image,
             "question": question,
             "object_name": object_name,
-            "pixel_oracle_mask": torch.tensor(pixel_oracle_mask), 
+            "pixel_oracle_mask": torch.tensor(pixel_oracle_mask),
+            "distractor_mask": torch.tensor(distractor_mask),
+            "distractor_category": distractor_category,
             "image_id": img_id
         }

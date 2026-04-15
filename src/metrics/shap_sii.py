@@ -246,22 +246,27 @@ class MacroSynergyGame(Game):
                     batch_input_ids[i : i + 1].scatter_(
                         dim=1, index=active_txt_idx, src=tokens_orig
                     )
+            # Create a shallow copy of inputs so we safely alter grid metadata per-batch
+            batch_inputs = {k: v for k, v in self.inputs.items()}
+
+            # Use model_type for routing
+            model_type = getattr(self, "model_type", "").lower()
 
             # 3. Reshape batch_feats back to original image shape
-            if self.ndim == 4:
+            if "llava" in model_type:
                 _, C, H, W = self.origin_shape
                 batch_pixels = batch_feats.reshape(current_batch_size, C, H, W)
 
-                batch_inputs = self.inputs  # Standard models don't need grid trick
+                # batch_inputs = self.inputs  # Standard models don't need grid trick
 
-            elif self.ndim == 3:
+            elif "qwen" in model_type:
                 _, num_pixels, patch_dim = self.origin_shape
                 batch_pixels = batch_feats.reshape(
                     current_batch_size, num_pixels, patch_dim
                 )
 
                 # 2. Create a copy of the inputs dict so we don't permanently alter the original
-                batch_inputs = {k: v for k, v in self.inputs.items()}
+                # batch_inputs = {k: v for k, v in self.inputs.items()}
 
                 # 3. Replicate the image_grid_thw to match the number of coalitions
                 if "image_grid_thw" in batch_inputs:
@@ -269,6 +274,12 @@ class MacroSynergyGame(Game):
                     # If grid is (1, 3), repeat it to (5, 3)
                     batch_inputs["image_grid_thw"] = grid.repeat(current_batch_size, 1)
                 # --- QWEN2-VL SPECIFIC FIX END ---
+            
+            elif "internvl" in model_type:
+                # InternVL expects 5D: (B, num_tiles, C, H, W)
+                _, num_tiles, C, H, W = self.origin_shape
+                batch_pixels = batch_feats.reshape(current_batch_size, num_tiles, C, H, W)
+
             else:
                 raise ValueError(
                     "The dimension of pixel values is not supported ! Must be (B, C, H, W) or (B, num_patches, patch_dim)"
@@ -306,6 +317,7 @@ def eval_sii_auc_with_class(
     # target_positions: list,
     filter_keywords: bool = True,
     blur_baseline: Tensor | None = None,
+    semantic_mask: Tensor | None = None,
     mask_value: float=0.0,
     n_background_groups: int=10,
     shapiq_budget: int=300,
@@ -365,8 +377,17 @@ def eval_sii_auc_with_class(
         sal_flat_img = pixel_attribution
     else:
         raise ValueError("pixel_attribution must be 2D, 3D, or 4D.")
+    
+    # --- 2. Setup Text Inputs ---
+    # Start by only allowing perturbation where semantic_mask is True
+    if semantic_mask is not None:
+        if semantic_mask.ndim == 1:
+            semantic_mask = semantic_mask.unsqueeze(0)
+        valid_mask = semantic_mask.to(device).clone()
+    else:
+        # Fallback if no mask is provided: assume all tokens are valid
+        valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
 
-    valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
     if special_token_ids is not None:
         for skip_id in special_token_ids:
             valid_mask &= input_ids != skip_id

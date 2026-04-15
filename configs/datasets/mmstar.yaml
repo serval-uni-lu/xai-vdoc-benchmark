@@ -1,0 +1,4 @@
+name: "mmstar"
+hf_path: "Lin-Chen/MMStar"
+split: "val"
+batch_size: 1

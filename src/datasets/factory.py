@@ -1,7 +1,12 @@
 from torch.utils.data import DataLoader
 
-from src.datasets import POPEGroundingDataset, POPEOracleDataset
-from src.datasets import COCOGroundingDataset
+from src.datasets import (
+    POPEGroundingDataset,
+    POPEOracleDataset,
+    MMVPDataset,
+    COCOGroundingDataset,
+    MMStarDataset,
+)
 
 
 def get_dataloader(dataset_config: dict):
@@ -24,6 +29,10 @@ def get_dataloader(dataset_config: dict):
         dataset = POPEOracleDataset(**config_copy)
     elif dataset_name == "coco":
         dataset = COCOGroundingDataset(**config_copy)
+    elif dataset_name == "mmvp":
+        dataset = MMVPDataset(**config_copy)
+    elif dataset_name == "mmstar":
+        dataset = MMStarDataset(**config_copy)
     else:
         raise ValueError(f"[!] Unknown dataset name in config: {dataset_name}")
 
