@@ -17,7 +17,7 @@ import scipy.stats as stats
 
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader 
-from src.explainers.utils import get_decision_token_index, save_to_jsonl
+from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl
 from src.models.factory import load_vlm
 
 # --- EXPLAINERS & METRICS ---
@@ -405,7 +405,7 @@ def run_evaluation(args):
                                         model_wrapper.processor.tokenizer)
 
             # 2. Identify the Decision Token
-            yes_no_tok_idx = get_decision_token_index(
+            yes_no_tok_idx = find_ynvqa_token_index(
                 pred_results["new_ids"], text_answer=pred_results["text"], tokenizer=tok
             )
             if yes_no_tok_idx is None:

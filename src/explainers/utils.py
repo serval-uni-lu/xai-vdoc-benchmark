@@ -1,7 +1,11 @@
+import os
 import json
 import math
 import string
+import re
 
+
+import yaml
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -455,13 +459,45 @@ def create_semantic_mask_robust(
     return mask
 
 
+def get_processed_indices(output_file: str, total_dataset_len: int, max_samples: int = None) -> set:
+    """
+    Scans the output JSONL file to find indices of already processed samples.
+    Returns a set of completed sample indices for resume logic.
+    """
+    processed_indices = set()
+    
+    if os.path.exists(output_file):
+        print(f"[*] Found existing results file. Scanning for completed samples...")
+        with open(output_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        data = json.loads(line)
+                        if "sample_idx" in data:
+                            processed_indices.add(data["sample_idx"])
+                    except json.JSONDecodeError:
+                        pass
+        
+        # Calculate the target denominator for the print statement
+        total_samples = total_dataset_len
+        if max_samples is not None:
+            total_samples = min(total_samples, max_samples)
+            
+        print(f"[*] Skipping {len(processed_indices)} / {total_samples} already processed samples.")
+        
+    return processed_indices
+
 def save_to_jsonl(data: dict, filepath: str):
     """Appends a dictionary as a JSON line to a file."""
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(data) + "\n")
 
+def load_yaml(file_path):
+    with open(file_path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
-def get_decision_token_index(new_ids, text_answer, tokenizer) -> int | None:
+
+def find_ynvqa_token_index(new_ids, text_answer, tokenizer) -> int | None:
     """
     Finds the exact index of the 'yes' or 'no' token in the generated sequence.
     """
@@ -486,3 +522,78 @@ def get_decision_token_index(new_ids, text_answer, tokenizer) -> int | None:
             return idx  # Found it! Return as a list for target_indices
 
     return None  # Fallback
+
+
+def find_mcvqa_token_index(new_ids, tokenizer, choices=['a', 'b', 'c', 'd']):
+    """
+    Scans tokenized output and scores candidates. 
+    Includes Math penalties, Special Token boundaries for LLaVA/Qwen, and Empty-Token detection.
+    """
+    if hasattr(new_ids, "dim") and new_ids.dim() > 1:
+        new_ids = new_ids[0].tolist()
+        
+    tokens = tokenizer.convert_ids_to_tokens(new_ids)
+    lower_choices = [str(c).lower() for c in choices]
+    
+    candidates = []
+
+    for idx, token in enumerate(tokens):
+        # re.sub automatically strips out '▁', 'Ġ', and ' ' to reveal the pure alphanumeric letter
+        clean_token = token.lower()
+        raw_chars = re.sub(r'[^a-z0-9]', '', clean_token)
+        
+        if len(raw_chars) == 1 and raw_chars in lower_choices:
+            score = 0
+            
+            # 1. Self-Context
+            if any(p in token for p in ['(', ')', '.', ':']):
+                score += 2
+                
+            # 2. Previous Context
+            if idx > 0:
+                prev_token = tokens[idx-1].lower()
+                # Clean the previous token to see if it's literally just empty space or special chars
+                prev_clean = re.sub(r'[^a-z0-9]', '', prev_token)
+                
+                # BOOST: If previous token is just spaces OR a structural/special start token
+                if not prev_clean or any(w in prev_token for w in ['answer', 'is', 'option', ':', '(', '\n', '<s>', '<bos>', '<pad>', '<|im_start|>']):
+                    score += 3
+                    
+                # MATH PENALTY
+                if any(m in prev_token for m in ['+', '-', '=', '^', '*', '/', '\\', '{', '}']):
+                    score -= 10
+            else:
+                score += 5 # First token boost
+
+            # 3. Next Context
+            if idx < len(tokens) - 1:
+                next_token = tokens[idx+1].lower()
+                next_clean = re.sub(r'[^a-z0-9]', '', next_token)
+                
+                # BOOST: If next token is just spaces OR a structural/special end token
+                if not next_clean or any(w in next_token for w in [')', '.', '\n', ':', '</s>', '<eos>', '<pad>', '<|im_end|>']):
+                    score += 3
+                    
+                # MATH PENALTY
+                if any(m in next_token for m in ['+', '-', '=', '^', '*', '/', '\\', '{', '}']):
+                    score -= 10
+            else:
+                score += 3 # Last token boost
+                
+            # 4. Penalty for normal words hidden in a sentence
+            if score <= 0:
+                score -= 5
+                
+            candidates.append((score, idx, token))
+
+    # Evaluate the candidates
+    if candidates:
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        best_score, best_idx, best_token = candidates[0]
+        
+        # ACCEPT IF: It survived the penalties OR it's the ONLY valid letter the model generated!
+        if best_score > -1 or len(candidates) == 1:
+            return best_idx, best_token
+            
+    # Fallback
+    return -1, tokens[0] if tokens else ""

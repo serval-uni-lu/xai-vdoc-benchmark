@@ -11,14 +11,9 @@ from tqdm import tqdm
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader
 from src.explainers.factory import get_explainer
-from src.explainers.utils import get_decision_token_index, save_to_jsonl
+from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl, load_yaml, get_processed_indices
 from src.metrics import FaithfulnessMetric
 from src.models.factory import load_vlm
-
-
-def load_yaml(file_path):
-    with open(file_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def run_benchmark(args):
@@ -116,26 +111,11 @@ def run_benchmark(args):
             # =========================================================
             # --- RESUME LOGIC: Find Already Processed Samples ---
             # =========================================================
-            processed_indices = set()
-            if os.path.exists(output_file):
-                print(f"[*] Found existing results file. Scanning for completed samples...")
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        if line.strip():
-                            try:
-                                data = json.loads(line)
-                                # Extract the exact integer index we saved!
-                                if "sample_idx" in data:
-                                    processed_indices.add(data["sample_idx"])
-                            except json.JSONDecodeError:
-                                pass
-                
-                total_samples = len(dl)
-                if args.max_samples is not None:
-                    total_samples = min(total_samples, args.max_samples)
-                
-                print(f"[*] Skipping {len(processed_indices)} / {total_samples} already processed samples.")
-            # =========================================================
+            processed_indices = get_processed_indices(
+                output_file=output_file,
+                total_dataset_len=len(dl),
+                max_samples=args.max_samples
+            )
 
             # ---------------------------------------------------------
             # INNER LOOP: Evaluate Dataset Samples
@@ -164,7 +144,7 @@ def run_benchmark(args):
                     pred_results = model_wrapper.predict(inputs, return_logits=True)
 
                     # 2. Identify the Decision Token (Yes/No)
-                    yes_no_tok_idx = get_decision_token_index(
+                    yes_no_tok_idx = find_ynvqa_token_index(
                         pred_results["new_ids"],
                         text_answer=pred_results["text"],
                         tokenizer=tok,

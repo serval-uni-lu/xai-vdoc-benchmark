@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader # Ensure this returns your POPEOracleDataset!
-from src.explainers.utils import get_decision_token_index, save_to_jsonl
+from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl
 from src.metrics import FaithfulnessMetric
 from src.models.factory import load_vlm
 
@@ -117,7 +117,7 @@ def run_experiment_1_1(args):
                     pred_results = model_wrapper.predict(inputs, return_logits=False)
 
                     # 2. Identify the Decision Token
-                    yes_no_tok_idx = get_decision_token_index(
+                    yes_no_tok_idx = find_ynvqa_token_index(
                         pred_results["new_ids"],
                         text_answer=pred_results["text"],
                         tokenizer=tok,

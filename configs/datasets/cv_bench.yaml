@@ -1,0 +1,4 @@
+name: "cv_bench"
+hf_path: "nyu-visionx/CV-Bench"
+split: "test"
+batch_size: 1

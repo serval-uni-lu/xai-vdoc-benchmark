@@ -3,38 +3,46 @@
 # Stop the script immediately if any command fails
 set -e 
 
+GPU_ID=${1:-0}
+EXPLAINERS=${2:-"tam"}
+MODEL_NAME=${3:-"internvl"}
+DATASET_NAME=${4:-"mmstar"}
+
+
 echo "========================================="
 echo "   Starting VLM XAI Benchmark Suite      "
 echo "========================================="
 
 # 1. Define your configurations
 # Add or remove paths here to change what the script runs
-MODELS=(
-    "configs/models/llava.yaml"
-    #"configs/models/qwenvl.yaml"
-    #configs/models/internvl.yaml"
-)
+MODELS="configs/models/${MODEL_NAME}.yaml"
 
-DATASETS=(
-    "configs/datasets/repope.yaml"
-    #"configs/datasets/repope_oracle.yaml"
-    #"configs/datasets/coco.yaml"
-)
+if [ ! -f "$MODELS" ]; then
+    echo "ERROR : The file $MODEL_CONFIG does not exist !"
+    exit 1
+fi
+
+DATASETS="configs/datasets/${DATASET_NAME}.yaml"
+
+if [ ! -f "$DATASETS" ]; then
+    echo "ERROR : The file $MODEL_CONFIG does not exist !"
+    exit 1
+fi
 
 OUTPUT_DIR=(
     "logs/results"
 )
 
 # Pass all explainers as a single string separated by spaces
-#EXPLAINERS="gradcam integratedgradients lxt"
-#EXPLAINERS="tam inputxgradients gradxrollout " 
-EXPLAINERS="random llavacam rollout"
+# #EXPLAINERS="gradcam lxt integratedgradients"
+# EXPLAINERS="tam inputxgradients gradxrollout " 
+# #EXPLAINERS="random llavacam rollout"
 
-# EXPLAINERS="tam integratedgradients llavacam lxt"
-# EXPLAINERS="random rollout inputxgradients gradxrollout gradcam tam integratedgradients llavacam lxt"
-# EXPLAINERS="tam"
+# # EXPLAINERS="tam integratedgradients llavacam lxt"
+# # EXPLAINERS="random rollout inputxgradients gradxrollout gradcam tam integratedgradients llavacam lxt"
+# # EXPLAINERS="tam"
 
-GPU_ID=1
+# GPU_ID=2
 
 # 2. Nested loops to run every combination
 for MODEL in "${MODELS[@]}"; do
@@ -43,17 +51,18 @@ for MODEL in "${MODELS[@]}"; do
         echo ""
         echo ">>> Launching Job: Model=$MODEL | Dataset=$DATASET"
         echo ">>> Explainers: $EXPLAINERS"
+        echo ">>> Executing module: src.benchmarks.$DATASET_NAME"
         
         # 3. Execute the Python script
         # Notice we omitted --max_samples so it runs the whole dataset!
         #python -m src.benchmarks.repope \
-        python -m src.benchmarks.repope \
+        python -m src.benchmarks."${DATASET_NAME}" \
             --model_config "$MODEL" \
             --dataset_config "$DATASET" \
             --gpu_id $GPU_ID \
             --output_dir $OUTPUT_DIR \
             --explainers $EXPLAINERS \
-            # --max_samples 200 \
+            --max_samples 2
             
             
         echo "<<< Job Finished. Moving to next configuration..."

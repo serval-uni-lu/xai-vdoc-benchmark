@@ -6,6 +6,7 @@ from src.datasets import (
     MMVPDataset,
     COCOGroundingDataset,
     MMStarDataset,
+    CVBenchDataset,
 )
 
 
@@ -33,6 +34,8 @@ def get_dataloader(dataset_config: dict):
         dataset = MMVPDataset(**config_copy)
     elif dataset_name == "mmstar":
         dataset = MMStarDataset(**config_copy)
+    elif dataset_name == "cv_bench":
+        dataset = CVBenchDataset(**config_copy)
     else:
         raise ValueError(f"[!] Unknown dataset name in config: {dataset_name}")
 

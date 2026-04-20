@@ -1,6 +1,7 @@
 import argparse
 import os
 import time
+import traceback
 
 import torch
 import yaml
@@ -9,15 +10,11 @@ from tqdm import tqdm
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader
 from src.explainers.factory import get_explainer
-from src.explainers.utils import get_decision_token_index, save_to_jsonl
+from src.explainers.utils import load_yaml, save_to_jsonl, get_processed_indices
 from src.metrics import FaithfulnessMetric, PlausibilityMetric
 from src.metrics.plausibility_utils import OntologyMapper, ids_to_word_groups
 from src.models.factory import load_vlm
 
-
-def load_yaml(file_path):
-    with open(file_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def run_benchmark(args):
@@ -66,7 +63,8 @@ def run_benchmark(args):
     
     # Setup Ontology Mapper for Plausibility (Assume dl.dataset has id2name)
     category_dict = getattr(dl.dataset, "id2name", {})
-    mapper = OntologyMapper(coco_categories=category_dict, threshold=0.5)
+    mapper = OntologyMapper(coco_categories=category_dict, threshold=0.5,
+                            device=model_wrapper.device)
 
     # 5. Initialize Metrics
     pert_steps = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]
@@ -102,12 +100,24 @@ def run_benchmark(args):
 
             output_file = os.path.join(output_dir, f"{run_name}_results.jsonl")
 
+            # =========================================================
+            # --- RESUME LOGIC: Find Already Processed Samples ---
+            # =========================================================
+            processed_indices = get_processed_indices(
+                output_file=output_file,
+                total_dataset_len=len(dl),
+                max_samples=args.max_samples
+            )
+
             # ---------------------------------------------------------
             # INNER LOOP: Evaluate Dataset Samples
             # ---------------------------------------------------------
             for idx, sample in enumerate(tqdm(dl, desc=f"Evaluating {explainer_name}")):
                 if args.max_samples is not None and idx >= args.max_samples:
                     break
+
+                if idx in processed_indices:
+                    continue
 
                 img = sample["image"]
                 # question = sample["question"]
@@ -141,16 +151,19 @@ def run_benchmark(args):
                             "note": "No valid objects generated."
                         }
                         # wandb.log(log_dict, step=idx)
+                        save_to_jsonl(log_dict, output_file)
+                        torch.cuda.empty_cache()
                         continue
 
                     # 4. Generate Attributions (ONLY for the targeted nouns)
                     start_time = time.perf_counter()
-                    text_attrs, img_attrs = explainer.attribute(
+                    _, img_attrs = explainer.attribute(
                         img,
                         text=text,
                         target_indices=target_indices,
                         pred_results=pred_results,
                     )
+                    text_attrs = None
                     xai_gen_time = time.perf_counter() - start_time
 
                     # 5. Package XAI Result 
@@ -186,6 +199,9 @@ def run_benchmark(args):
                     # wandb.log(log_dict, step=idx)
                     save_to_jsonl(log_dict, output_file)
 
+                    del pred_results, img_attrs, text_attrs
+                    torch.cuda.empty_cache()
+
                 except Exception as e:
                     print(f"[!] Explainer failed on sample {idx}: {e}")
                     continue
@@ -202,6 +218,7 @@ def run_benchmark(args):
             print(f"\n[!] ERROR: Explainer '{explainer_path}' crashed completely!")
             print(f"[!] Exception Details: {e}")
             print("[!] Skipping this explainer and moving to the next one...\n")
+            traceback.print_exc()
 
             if explainer is not None:
                 if hasattr(explainer, "cleanup"):
