@@ -247,8 +247,8 @@ class BaseVLMWrapper(nn.Module, Generic[ModelT], ABC):
             logits = [self.model.lm_head(feats[-1]) for feats in outputs.hidden_states]
             return {
                 "text": decoded_text,
-                "full_ids": generated_ids,  # (Seq_Len,)
-                "new_ids": new_ids,  # (Ans_Len,)
+                "full_ids": generated_ids.cpu(),  # (Seq_Len,)
+                "new_ids": new_ids.cpu(),  # (Ans_Len,)
                 "logits": logits,
             }
 

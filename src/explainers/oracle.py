@@ -14,7 +14,7 @@ class OracleExplainer(BaseExplainer):
     def __init__(self, model_wrapper: "BaseVLMWrapper"):
         super().__init__(model_wrapper)
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text: str,
@@ -181,7 +181,7 @@ class AntiExplainer(OracleExplainer):
     Used to validate the lower bound of faithfulness metrics.
     """
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text: str,
@@ -190,7 +190,7 @@ class AntiExplainer(OracleExplainer):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         
         # 1. Let the Oracle do all the hard shape-matching work!
-        perfect_tokens, perfect_pixels = super().attribute(
+        perfect_tokens, perfect_pixels = super()._attribute(
             image=image, 
             text=text, 
             target_indices=target_indices, 
@@ -213,7 +213,7 @@ class MismatchedExplainer(OracleExplainer):
     Proves that the Synergy metric catches cross-modal hallucinations.
     """
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text: str,
@@ -231,7 +231,7 @@ class MismatchedExplainer(OracleExplainer):
             raise ValueError("MismatchedExplainer requires 'mismatched_mask_2d'.")
 
         # Let the Oracle do the shape-matching work, but feed it the lie!
-        perfect_tokens, wrong_pixels = super().attribute(
+        perfect_tokens, wrong_pixels = super()._attribute(
             image=image, 
             text=text, 
             target_indices=target_indices, 

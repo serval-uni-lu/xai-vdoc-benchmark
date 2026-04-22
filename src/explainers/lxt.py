@@ -133,7 +133,7 @@ class LXTExplainer(BaseExplainer):
             zennit_comp.register(model)
         return zennit_comp
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text: str,
@@ -151,7 +151,7 @@ class LXTExplainer(BaseExplainer):
                 return_logits=False,
                 **kwargs,
             )
-        full_ids = pred_results["full_ids"]
+        full_ids = pred_results["full_ids"].to(self.device)
 
         t_start = inputs["input_ids"].shape[1]
         t_end = full_ids.shape[-1]

@@ -115,7 +115,7 @@ class AtManExplainer(BaseExplainer):
         finally:
             self.clear_hooks()
 
-    def attribute(
+    def _attribute(
         self, image, text: str, target_indices: int | list[int] | None, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
 

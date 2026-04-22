@@ -212,7 +212,7 @@ class RolloutExplainer(BaseExplainer):
 
         return rollout
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text,
@@ -231,7 +231,7 @@ class RolloutExplainer(BaseExplainer):
                 return_logits=False,
                 **kwargs,
             )
-        full_ids = pred_results["full_ids"]
+        full_ids = pred_results["full_ids"].to(self.device)
 
         # Define the indices of the answers tokens and visual tokens
         t_start = inputs["input_ids"].shape[1]

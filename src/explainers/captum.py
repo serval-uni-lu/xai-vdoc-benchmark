@@ -38,7 +38,7 @@ class CaptumExplainer(BaseExplainer):
         }
         return integrad_kwargs
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text,

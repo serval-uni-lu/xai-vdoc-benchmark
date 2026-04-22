@@ -237,94 +237,14 @@ class FIxLIPExplainer(BaseExplainer):
         self.patch_group_size = patch_group_size
         self.approximation_type = approximation_type
 
-    # def attribute(
-    #     self,
-    #     image,
-    #     text: str,
-    #     target_indices: int | list[int] | None = None,
-    #     **kwargs,
-    # ) -> tuple[torch.Tensor, torch.Tensor]:
-        
-    #     # 1. Base Forward Pass to get target IDs
-    #     inputs = self.wrapper.get_inputs(image, text)
-    #     pred_results = kwargs.get("pred_results")
-    #     if pred_results is None:
-    #         pred_results = self.wrapper.predict(inputs, return_logits=True, **kwargs)
-            
-    #     new_ids = pred_results["new_ids"]
-    #     if new_ids.dim() > 1: new_ids = new_ids[0]
-        
-    #     indices_to_compute = target_indices if isinstance(target_indices, list) else [target_indices] if target_indices is not None else list(range(len(new_ids)))
-    #     model_type = getattr(self.wrapper.model.config, "model_type", "").lower()
 
-    #     # 2. Setup SHAP Accumulators
-    #     pixel_shap = []
-    #     token_shap = []
-
-    #     # 3. Execution Loop (One Game per Target Token)
-    #     for t_idx, real_idx in enumerate(indices_to_compute):
-            
-    #         # --- Initialize our Custom Game ---
-    #         game = GenerativeVLMGame(
-    #             model_wrapper=self.wrapper,
-    #             image=image,
-    #             text=text,
-    #             target_ids=new_ids,
-    #             target_seq_index=real_idx,
-    #             batch_size=self.batch_size,
-    #             mask_value=self.mask_value,
-    #             patch_group_size=self.patch_group_size
-    #         )
-            
-    #         # --- Initialize Official FIxLIP ---
-    #         fixlip_approx = FIxLIP(
-    #             n_players_image=game.n_players_image,
-    #             n_players_text=game.n_players_text,
-    #             mode="banzhaf",
-    #             max_order=2, # Extracts True Order 2 Interactions internally
-    #             random_state=self.seed
-    #         )
-            
-    #         # --- Run Cross-Modal XGBoost Approximation ---
-    #         ivs = fixlip_approx.approximate_crossmodal(
-    #             game=game,
-    #             budget=self.budget,
-    #             approximation_type=self.approximation_type,
-    #         )
-            
-    #         # --- EXTRACT PIXEL SHAP (Order 1 Marginals for Heatmap) ---
-    #         # Extract the 1D values for the image patches
-    #         p_s = torch.tensor([ivs[(i,)] for i in range(game.n_players_image)], device=self.wrapper.device)
-            
-    #         # If we grouped patches, we must upsample the 1D scores back to the full grid
-    #         # so your benchmark metrics (Faithfulness/Plausibility) don't crash!
-    #         if self.patch_group_size > 1 and "internvl" not in model_type:
-    #             small_grid = p_s.view(1, 1, game.grouped_h, game.grouped_w)
-    #             p_s = F.interpolate(small_grid, size=(game.grid_h, game.grid_w), mode='nearest').flatten()
-                
-    #         pixel_shap.append(p_s.cpu().numpy())
-            
-    #         # --- EXTRACT TEXT SHAP (Order 1 Marginals) ---
-    #         t_s = [0.0] * inputs["input_ids"].shape[1]
-    #         for j, real_seq_idx in enumerate(game.valid_token_indices.cpu().numpy()):
-    #             t_s[real_seq_idx] = ivs[(game.n_players_image + j,)]
-    #         token_shap.append(t_s)
-
-    #     # 4. Format to Tensors and Standard Spatial Shapes
-    #     pixel_attributions = torch.tensor(np.array(pixel_shap), device=self.wrapper.device, dtype=torch.float32)
-    #     token_shap_tensor = torch.tensor(token_shap, device=self.wrapper.device, dtype=torch.float32)
-        
-    #     # pixel_attributions = self._reshape_to_spatial(pixel_attributions, model_type, inputs)
-
-    #     return token_shap_tensor, pixel_attributions
-
-    def attribute(
+    def _attribute(
         self,
         image,
         text: str,
         target_indices: int | list[int] | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Executes the SHAP explanation loop. 
         Returns:
@@ -451,7 +371,8 @@ class FIxLIPExplainer(BaseExplainer):
         # Stack synergies for all evaluated targets. Shape: (num_targets, H, W, seq_len)
         synergy_attributions = torch.tensor(np.array(cross_modal_synergies), device=self.wrapper.device, dtype=torch.float32)
 
-        return token_shap_tensor, pixel_attributions, synergy_attributions
+        # return token_shap_tensor, pixel_attributions, synergy_attributions
+        return token_shap_tensor, pixel_attributions
 
     def _reshape_to_spatial(self, pixel_shap, model_type, inputs):
         """Maps the flat 1D pixel SHAP array into the 2D hardware grid of the specific VLM."""

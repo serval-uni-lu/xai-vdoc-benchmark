@@ -15,7 +15,7 @@ class RandomExplainer(BaseExplainer):
     def __init__(self, model_wrapper: "BaseVLMWrapper"):
         super().__init__(model_wrapper)
 
-    def attribute(
+    def _attribute(
         self,
         image,
         text: str,
