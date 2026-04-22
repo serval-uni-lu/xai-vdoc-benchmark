@@ -13,6 +13,16 @@ echo "========================================="
 echo "   Starting VLM XAI Benchmark Suite      "
 echo "========================================="
 
+# # --- NEW: Handle GPU Visibility ---
+# if [ "$GPU_ID" == "all" ]; then
+#     echo "[*] Using all available GPUs"
+#     # We don't export CUDA_VISIBLE_DEVICES, letting torch see everything
+# else
+#     echo "[*] Setting visible GPUs to: $GPU_ID"
+#     export CUDA_VISIBLE_DEVICES=$GPU_ID
+# fi
+# # ----------------------------------
+
 # 1. Define your configurations
 # Add or remove paths here to change what the script runs
 MODELS="configs/models/${MODEL_NAME}.yaml"
@@ -38,11 +48,6 @@ OUTPUT_DIR=(
 # EXPLAINERS="tam inputxgradients gradxrollout " 
 # #EXPLAINERS="random llavacam rollout"
 
-# # EXPLAINERS="tam integratedgradients llavacam lxt"
-# # EXPLAINERS="random rollout inputxgradients gradxrollout gradcam tam integratedgradients llavacam lxt"
-# # EXPLAINERS="tam"
-
-# GPU_ID=2
 
 # 2. Nested loops to run every combination
 for MODEL in "${MODELS[@]}"; do
@@ -62,7 +67,7 @@ for MODEL in "${MODELS[@]}"; do
             --gpu_id $GPU_ID \
             --output_dir $OUTPUT_DIR \
             --explainers $EXPLAINERS \
-            --max_samples 2000
+            --max_samples 1000
             
         echo "<<< Job Finished. Moving to next configuration..."
         sleep 5 # Give the OS a few seconds to fully flush the GPU VRAM

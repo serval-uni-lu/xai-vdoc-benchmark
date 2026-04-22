@@ -225,7 +225,7 @@ class LLaVACAMExplainer(BaseExplainer):
                 # --- TARGETED LOOP: Only backward pass on requested indices ---
                 for i in indices_to_compute:
                     self.wrapper.model.zero_grad()
-                    target_logits[:, i].backward(retain_graph=True)
+                    target_logits[:, i].backward(retain_graph=False)
 
                     if self.gradients is None:
                         raise RuntimeError(

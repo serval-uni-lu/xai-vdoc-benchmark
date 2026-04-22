@@ -66,7 +66,7 @@ class CaptumExplainer(BaseExplainer):
                 return_logits=False,
                 **kwargs,
             )
-        new_ids = pred_results["new_ids"]
+        new_ids = pred_results["new_ids"].to(self.device)
         seq_len = len(new_ids)
 
         # --- DYNAMIC INDICES RESOLUTION ---

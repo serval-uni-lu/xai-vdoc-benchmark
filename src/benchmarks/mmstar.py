@@ -157,8 +157,8 @@ def run_benchmark(args):
                     xai_result = {
                         "inputs": inputs,
                         "target_ids": pred_results["new_ids"].unsqueeze(0),
-                        "pixel_attribution": img_attrs[decision_idx : decision_idx + 1],
-                        "token_attribution": text_attrs[decision_idx : decision_idx + 1],
+                        "pixel_attribution": img_attrs[0:1],
+                        "token_attribution": text_attrs[0:1],
                     }
 
                     faith_sample = {"image": img, "text": question}
