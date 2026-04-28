@@ -2,7 +2,6 @@ import argparse
 import os
 import time
 import traceback
-import json
 from typing import Any, Sequence
 
 
@@ -12,18 +11,13 @@ from torch import Tensor
 import yaml
 from tqdm import tqdm
 from PIL import ImageFilter
-import pandas as pd
-import scipy.stats as stats
 
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader 
-from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl
+from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl, get_processed_indices
 from src.models.factory import load_vlm
-
-# --- EXPLAINERS & METRICS ---
-from src.explainers import TAMExplainer, OracleExplainer, RandomExplainer, AntiExplainer
+from src.explainers.factory import get_explainer
 from src.metrics.shap_sii import eval_sii_auc_with_class
-# from src.metrics.faithfulness import eval_multimodal_synergy_batch
 from src.metrics.faithfulness_utils import (
     _reshape_pixels_back_faithfulness,
     _reshape_pixels_faithfulness,
@@ -318,37 +312,47 @@ def run_evaluation(args):
     dataset_config = load_yaml(args.dataset_config)
     model_config = load_yaml(args.model_config)
 
-    # Setup Output Directory
-    output_dir = os.path.join(args.output_dir, model_config["name"])
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Use explainer name in the output file to keep runs organized
-    run_name = f"eval_{dataset_config['name']}_{args.explainer}"
-    output_file = os.path.join(output_dir, f"{run_name}_results.jsonl")
+    # --- AUTO-PATH RESOLUTION ---
+    explainer_paths = []
+    for exp in args.explainers:
+        if exp.endswith(".yaml"):
+            explainer_paths.append(exp)  # User provided a direct path
+        else:
+            explainer_paths.append(f"configs/explainers/{exp}.yaml")  # Auto-resolve!
 
-    # 2. Load Model & Dataset (Model/Data Agnostic Factories)
-    print(f"[*] Loading Model: {model_config['name']}...")
+    # Load them using the resolved paths
+    explainer_configs = [load_yaml(path) for path in explainer_paths]
+
+    # Setup Output Directory
+    output_dir = os.path.join(
+        args.output_dir, model_config["name"], f"{dataset_config["name"]}_{dataset_config["pope_type"]}"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 2. Attention "Lookahead" Optimization
+    needs_attention = any(
+        cfg.get("requires_attention", False) for cfg in explainer_configs
+    )
+    attn_mode = "eager" if needs_attention else None
+    print(f"[*] Attention Implementation set to: {attn_mode}")
+
+    # 3. Load Model (ONCE per script execution)
     model_wrapper = load_vlm(
         model_config=model_config,
-        attn_implementation=None, 
+        attn_implementation=attn_mode,
         gpu_node=args.gpu_id,
-        output_attentions=False # TAM might need attention outputs
+        output_attentions=needs_attention,
     )
+    # Store the config on the wrapper so LXT Explainer can reload the model if needed!
+    model_wrapper.model_config = {
+        "model_config": model_config,
+        "attn_implementation": attn_mode,
+        "gpu_node": args.gpu_id,
+        "output_attentions":needs_attention
+    }
 
     print(f"[*] Loading Dataset: {dataset_config['name']}...")
     dl = get_dataloader(dataset_config)
-
-    # 3. Select Explainer
-    if args.explainer == "tam":
-        explainer = TAMExplainer(model_wrapper)
-    elif args.explainer == "Oracle":
-        explainer = OracleExplainer(model_wrapper)
-    elif args.explainer == "random":
-        explainer = RandomExplainer(model_wrapper)
-    elif args.explainer == "Anti":
-        explainer = AntiExplainer(model_wrapper)
-    else:
-        raise ValueError(f"Unknown explainer: {args.explainer}")
 
     # 4. Metric Hyperparameters
     pert_steps = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
@@ -358,166 +362,224 @@ def run_evaluation(args):
     special_token_ids = model_wrapper.special_token_ids
     filter_keywords = True
 
-    # --- RESUME LOGIC ---
-    processed_indices = set()
-    if os.path.exists(output_file):
-        print(f"[*] Found existing results at {output_file}. Scanning...")
-        with open(output_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        data = json.loads(line)
-                        if "sample_idx" in data:
-                            processed_indices.add(data["sample_idx"])
-                    except json.JSONDecodeError:
-                        pass
-        print(f"[*] Skipping {len(processed_indices)} already processed samples.")
 
     # ---------------------------------------------------------
-    # EVALUATION LOOP
+    # OUTER LOOP: Iterate over Requested Explainers
     # ---------------------------------------------------------
-    for idx, sample in enumerate(tqdm(dl, desc=f"Evaluating {args.explainer}")):
-        if args.max_samples is not None and idx >= args.max_samples:
-            break
-
-        if idx in processed_indices:
-            continue 
+    for explainer_path in explainer_paths:
+        # Load explainer dynamically, injecting model config for CAM layers
+        explainer, explainer_name = get_explainer(
+            explainer_path, model_wrapper, model_config
+        )
 
         try:
-            img = sample["image"]
-            question = sample["question"]
-            label = sample.get("label", "unknown")
-            image_id = sample.get("image_id", f"unknown_{idx}")
-            
-            # Extract Masks (if using Oracle/Anti)
-            keyword = sample.get("object_name")
-            oracle_mask_2d = sample.get("pixel_oracle_mask")
-            
-
-            # 1. Forward Pass
-            inputs = model_wrapper.get_inputs(img, question)
-            pred_results = model_wrapper.predict(inputs, return_logits=True)
-
-            # Get text only mask
-            model_type = getattr(model_wrapper.model.config, "model_type", "").lower()
-            semantic_mask = get_text_mask(inputs["input_ids"],
-                                        model_type,
-                                        model_wrapper.processor.tokenizer)
-
-            # 2. Identify the Decision Token
-            yes_no_tok_idx = find_ynvqa_token_index(
-                pred_results["new_ids"], text_answer=pred_results["text"], tokenizer=tok
+            print(
+                f"\n{'=' * 50}\n[*] Evaluating: {explainer_name} on {model_config['name']}\n{'=' * 50}"
             )
-            if yes_no_tok_idx is None:
-                yes_no_tok_idx = 0 
 
-            # 3. Generate Attributions
-            # Pass Oracle kwargs safely (TAM ignores them, Oracle uses them)
-            text_attrs, img_attrs = explainer.attribute(
-                img, text=question, target_indices=yes_no_tok_idx, 
-                pred_results=pred_results, keyword=keyword, oracle_mask_2d=oracle_mask_2d
+            # Initialize Weights & Biases
+            run_name = (
+                f"{model_config['name']}_{dataset_config['name']}_{dataset_config['pope_type']}_{explainer_name}"
             )
-            
-            # Slice strictly for the target token
-            pixel_attribution = img_attrs[yes_no_tok_idx:yes_no_tok_idx+1]
-            token_attribution = text_attrs[yes_no_tok_idx:yes_no_tok_idx+1]
-            target_ids = pred_results["new_ids"].unsqueeze(0)
 
-            # 4. Generate Image Baseline (Model Agnostic!)
-            blurred_img = img.filter(ImageFilter.GaussianBlur(radius=30))
-            blur_inputs = model_wrapper.get_inputs(blurred_img, question)
-            blur_baseline = blur_inputs["pixel_values"].to(device)
+            output_file = os.path.join(output_dir, f"{run_name}_results.jsonl")
 
-            log_dict = {
-                "sample_idx": idx,
-                "image_id": image_id,
-                "question": question,
-                "label": label,
-                "prediction": pred_results.get("text"),
-            }
-
-            # ==============================================================
-            # METRIC 1: EXACT SHAP SII (Computationally Heavy)
-            # ==============================================================
-            start_time = time.perf_counter()
-            shap_sii_res = eval_sii_auc_with_class(
-                model=model_wrapper, inputs=inputs, target_ids=target_ids,
-                token_attribution=token_attribution, pixel_attribution=pixel_attribution,
-                perturbation_steps=pert_steps, pad_token_id=pad_token_id,
-                special_token_ids=special_token_ids, filter_keywords=filter_keywords,
-                blur_baseline=blur_baseline, mask_value=0.0, semantic_mask=semantic_mask,
-                n_background_groups=args.n_background_groups, 
-                shapiq_budget=args.shapiq_budget, batch_size=args.batch_size
+            # =========================================================
+            # --- RESUME LOGIC: Find Already Processed Samples ---
+            # =========================================================
+            processed_indices = get_processed_indices(
+                output_file=output_file,
+                total_dataset_len=len(dl),
+                max_samples=args.max_samples
             )
-            log_dict["time_sii"] = time.perf_counter() - start_time
-            log_dict["sii_auc"] = float(shap_sii_res["sii_auc"].item())
 
-            if "sii_curve" in shap_sii_res:
-                log_dict["sii_curve"] = safe_flatten_to_list(shap_sii_res["sii_curve"])
 
-            # ==============================================================
-            # METRIC 2: FAST PID SYNERGY (With Grammar Freeze)
-            # ==============================================================
-            start_time = time.perf_counter()
-            syn_res = eval_multimodal_synergy_batch(
-                model=model_wrapper, inputs=inputs, target_ids=target_ids,
-                token_attribution=token_attribution, pixel_attribution=pixel_attribution,
-                perturbation_steps=pert_steps, pad_token_id=pad_token_id,
-                special_token_ids=special_token_ids, 
-                semantic_mask=semantic_mask, # Passes the frozen grammar mask!
-                blur_baseline=blur_baseline, mask_value=0.0, 
-                filter_keywords=filter_keywords
-            )
-            log_dict["time_syn"] = time.perf_counter() - start_time
+            # ---------------------------------------------------------
+            # EVALUATION LOOP
+            # ---------------------------------------------------------
+            for idx, sample in enumerate(tqdm(dl, desc=f"Evaluating {args.explainer}")):
+                if args.max_samples is not None and idx >= args.max_samples:
+                    break
 
-            for key, val in syn_res.items():
-                if "synergy_curve" in key:
-                    log_dict[f"syn_{key}"] = safe_flatten_to_list(val)
+                if idx in processed_indices:
+                    continue 
 
-            # Compute Final Aggregated PID Scores
-            ins_align = float(syn_res["ins_alignment_auc"].item())
-            del_align = float(syn_res["del_alignment_auc"].item())
-            log_dict["final_alignment"] = (ins_align + (1.0 - del_align)) / 2.0
-            
-            ins_true_syn = float(syn_res["ins_true_syn_auc"].item())
-            del_true_syn = float(syn_res["del_true_syn_auc"].item())
-            log_dict["final_true_syn"] = (ins_true_syn + (1.0 - del_true_syn)) / 2.0
-            
-            ins_red = float(syn_res["ins_redundancy_auc"].item())
-            del_red = float(syn_res["del_redundancy_auc"].item())
-            log_dict["final_redundancy"] = (ins_red + (1.0 - del_red)) / 2.0
-            
-            log_dict["standard_srg"] = float(syn_res["ins_norm_auc"].item()) - float(syn_res["del_norm_auc"].item())
-            log_dict["synergy_srg"] = (float(syn_res["ins_norm_auc"].item()) + float(syn_res["del_norm_auc"].item())) / 2.
-            log_dict["synergy_refined_srg"] = (float(syn_res["ins_norm_auc"].item()) + (1. - float(syn_res["del_norm_auc"].item()))) / 2.
+                try:
+                    img = sample["image"]
+                    question = sample["question"]
+                    label = sample.get("label", "unknown")
+                    image_id = sample.get("image_id", f"unknown_{idx}")
+                    
+                    # Extract Masks (if using Oracle/Anti)
+                    keyword = sample.get("object_name")
+                    oracle_mask_2d = sample.get("pixel_oracle_mask")
+                    
 
-            # Save
-            save_to_jsonl(log_dict, output_file)
+                    # 1. Forward Pass
+                    inputs = model_wrapper.get_inputs(img, question)
+                    pred_results = model_wrapper.predict(inputs, return_logits=True)
 
-            # Cleanup to prevent OOM
-            del inputs, blur_inputs, text_attrs, img_attrs, syn_res
-            del shap_sii_res
+                    # Get text only mask
+                    model_type = getattr(model_wrapper.model.config, "model_type", "").lower()
+                    semantic_mask = get_text_mask(inputs["input_ids"],
+                                                model_type,
+                                                model_wrapper.processor.tokenizer)
+
+                    # 2. Identify the Decision Token
+                    yes_no_tok_idx = find_ynvqa_token_index(
+                        pred_results["new_ids"], text_answer=pred_results["text"], tokenizer=tok
+                    )
+                    if yes_no_tok_idx is None:
+                        yes_no_tok_idx = 0 
+
+                    # 3. Generate Attributions
+                    # Pass Oracle kwargs safely (TAM ignores them, Oracle uses them)
+                    text_attrs, img_attrs = explainer.attribute(
+                        img, text=question, target_indices=yes_no_tok_idx, 
+                        pred_results=pred_results, keyword=keyword, oracle_mask_2d=oracle_mask_2d
+                    )
+                    
+                    # Slice strictly for the target token
+                    pixel_attribution = img_attrs[yes_no_tok_idx:yes_no_tok_idx+1]
+                    token_attribution = text_attrs[yes_no_tok_idx:yes_no_tok_idx+1]
+                    target_ids = pred_results["new_ids"].unsqueeze(0)
+
+                    # 4. Generate Image Baseline (Model Agnostic!)
+                    blurred_img = img.filter(ImageFilter.GaussianBlur(radius=30))
+                    blur_inputs = model_wrapper.get_inputs(blurred_img, question)
+                    blur_baseline = blur_inputs["pixel_values"].to(device)
+
+                    log_dict = {
+                        "sample_idx": idx,
+                        "image_id": image_id,
+                        "question": question,
+                        "label": label,
+                        "prediction": pred_results.get("text"),
+                    }
+
+                    # ==============================================================
+                    # METRIC 1: EXACT SHAP SII (Computationally Heavy)
+                    # ==============================================================
+                    start_time = time.perf_counter()
+                    shap_sii_res = eval_sii_auc_with_class(
+                        model=model_wrapper, inputs=inputs, target_ids=target_ids,
+                        token_attribution=token_attribution, pixel_attribution=pixel_attribution,
+                        perturbation_steps=pert_steps, pad_token_id=pad_token_id,
+                        special_token_ids=special_token_ids, filter_keywords=filter_keywords,
+                        blur_baseline=blur_baseline, mask_value=0.0, semantic_mask=semantic_mask,
+                        n_background_groups=args.n_background_groups, 
+                        shapiq_budget=args.shapiq_budget, batch_size=args.batch_size
+                    )
+                    log_dict["time_sii"] = time.perf_counter() - start_time
+                    log_dict["sii_auc"] = float(shap_sii_res["sii_auc"].item())
+
+                    if "sii_curve" in shap_sii_res:
+                        log_dict["sii_curve"] = safe_flatten_to_list(shap_sii_res["sii_curve"])
+
+                    # ==============================================================
+                    # METRIC 2: FAST PID SYNERGY (With Grammar Freeze)
+                    # ==============================================================
+                    start_time = time.perf_counter()
+                    syn_res = eval_multimodal_synergy_batch(
+                        model=model_wrapper, inputs=inputs, target_ids=target_ids,
+                        token_attribution=token_attribution, pixel_attribution=pixel_attribution,
+                        perturbation_steps=pert_steps, pad_token_id=pad_token_id,
+                        special_token_ids=special_token_ids, 
+                        semantic_mask=semantic_mask, # Passes the frozen grammar mask!
+                        blur_baseline=blur_baseline, mask_value=0.0, 
+                        filter_keywords=filter_keywords
+                    )
+                    log_dict["time_syn"] = time.perf_counter() - start_time
+
+                    for key, val in syn_res.items():
+                        if "synergy_curve" in key:
+                            log_dict[f"syn_{key}"] = safe_flatten_to_list(val)
+
+                    # Compute Final Aggregated PID Scores
+                    ins_align = float(syn_res["ins_alignment_auc"].item())
+                    del_align = float(syn_res["del_alignment_auc"].item())
+                    log_dict["final_alignment"] = (ins_align + (1.0 - del_align)) / 2.0
+                    
+                    ins_true_syn = float(syn_res["ins_true_syn_auc"].item())
+                    del_true_syn = float(syn_res["del_true_syn_auc"].item())
+                    log_dict["final_true_syn"] = (ins_true_syn + (1.0 - del_true_syn)) / 2.0
+                    
+                    ins_red = float(syn_res["ins_redundancy_auc"].item())
+                    del_red = float(syn_res["del_redundancy_auc"].item())
+                    log_dict["final_redundancy"] = (ins_red + (1.0 - del_red)) / 2.0
+                    
+                    log_dict["standard_srg"] = float(syn_res["ins_norm_auc"].item()) - float(syn_res["del_norm_auc"].item())
+                    log_dict["synergy_srg"] = (float(syn_res["ins_norm_auc"].item()) + float(syn_res["del_norm_auc"].item())) / 2.
+                    log_dict["synergy_refined_srg"] = (float(syn_res["ins_norm_auc"].item()) + (1. - float(syn_res["del_norm_auc"].item()))) / 2.
+
+                    # Save
+                    save_to_jsonl(log_dict, output_file)
+
+                    # Cleanup to prevent OOM
+                    del inputs, blur_inputs, text_attrs, img_attrs, syn_res
+                    del shap_sii_res
+                    torch.cuda.empty_cache()
+
+                except Exception as e:
+                    print(f"\n[!] Failed on sample {idx}: {e}")
+                    traceback.print_exc()
+                    continue
+
+            # Cleanup before moving to the next explainer
+            print(f"[*] Finished {explainer_name}. Cleaning up GPU memory...")
+            if hasattr(explainer, "cleanup"):
+                explainer.cleanup()
+            del explainer
+            torch.cuda.empty_cache()
+            # wandb.finish()
+
+        
+        # --- THE NEW CRASH CATCHER ---
+        except Exception as e:
+            print(f"\n[!] ERROR: Explainer '{explainer_path}' crashed completely!")
+            print(f"[!] Exception Details: {e}")
+            print("[!] Skipping this explainer and moving to the next one...\n")
+
+            # 1. Safely force-delete the explainer from VRAM if it partially initialized
+            if explainer is not None:
+                if hasattr(explainer, "cleanup"):
+                    try:
+                        explainer.cleanup()
+                    except:
+                        pass
+                del explainer
             torch.cuda.empty_cache()
 
-        except Exception as e:
-            print(f"\n[!] Failed on sample {idx}: {e}")
-            traceback.print_exc()
             continue
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Unified XAI Evaluation Suite")
 
     # Configs
-    parser.add_argument("--model_config", type=str, required=True, help="Path to model YAML")
-    parser.add_argument("--dataset_config", type=str, required=True, help="Path to dataset YAML")
-    parser.add_argument("--explainer", type=str, default="tam", choices=["tam", "Oracle", "Random", "Anti"])
-    parser.add_argument("--output_dir", type=str, default="logs", help="Where to save logs")
+    parser.add_argument(
+        "--model_config", type=str, required=True, help="Path to model YAML"
+    )
+    parser.add_argument(
+        "--dataset_config", type=str, required=True, help="Path to dataset YAML"
+    )
+    parser.add_argument(
+        "--explainers",
+        nargs="+",
+        required=True,
+        help="List of paths to explainer YAMLs",
+    )
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU node to use")
-    parser.add_argument("--max_samples", type=int, default=200, help="Max samples to evaluate")
+    parser.add_argument(
+        "--max_samples", type=int, default=None, help="Max samples to evaluate"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="logs/results_test_baseline",
+        help="Where to save logs",
+    )
     
     # Metric Params
-    # parser.add_argument("--filter_keywords", action="store_true", help="Filter text evaluation to keywords")
-    # parser.add_argument("--compute_sii", action="store_true", help="Run the expensive SHAP SII baseline")
     parser.add_argument("--shapiq_budget", type=int, default=400, help="Budget for ShapIQ interaction approx")
     parser.add_argument("--n_background_groups", type=int, default=6, help="Grouping for SII pixels")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for metric scoring")

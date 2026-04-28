@@ -31,13 +31,9 @@ if [ ! -f "$DATASETS" ]; then
 fi
 
 OUTPUT_DIR=(
-    "logs/results"
+    "logs/correlation"
 )
 
-# Pass all explainers as a single string separated by spaces
-# #EXPLAINERS="gradcam lxt integratedgradients"
-# EXPLAINERS="tam inputxgradients gradxrollout " 
-# #EXPLAINERS="random llavacam rollout"
 
 
 # 2. Nested loops to run every combination
@@ -50,15 +46,13 @@ for MODEL in "${MODELS[@]}"; do
         echo ">>> Executing module: src.benchmarks.$DATASET_NAME"
         
         # 3. Execute the Python script
-        # Notice we omitted --max_samples so it runs the whole dataset!
-        #python -m src.benchmarks.repope \
-        python -m src.benchmarks."${DATASET_NAME}" \
+        python -m src.benchmarks.correlation_sii \
             --model_config "$MODEL" \
             --dataset_config "$DATASET" \
             --gpu_id $GPU_ID \
             --output_dir $OUTPUT_DIR \
             --explainers $EXPLAINERS \
-            --max_samples 1000
+            --max_samples 200
             
         echo "<<< Job Finished. Moving to next configuration..."
         sleep 5 # Give the OS a few seconds to fully flush the GPU VRAM
