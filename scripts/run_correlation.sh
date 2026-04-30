@@ -6,7 +6,7 @@ set -e
 GPU_ID=${1:-0}
 EXPLAINERS=${2:-"tam"}
 MODEL_NAME=${3:-"internvl"}
-DATASET_NAME=${4:-"mmstar"}
+DATASET_NAME=${4:-"repope"}
 
 
 echo "========================================="

@@ -397,7 +397,7 @@ def run_evaluation(args):
             # ---------------------------------------------------------
             # EVALUATION LOOP
             # ---------------------------------------------------------
-            for idx, sample in enumerate(tqdm(dl, desc=f"Evaluating {args.explainer}")):
+            for idx, sample in enumerate(tqdm(dl, desc=f"Evaluating {args.explainers}")):
                 if args.max_samples is not None and idx >= args.max_samples:
                     break
 
@@ -440,8 +440,8 @@ def run_evaluation(args):
                     )
                     
                     # Slice strictly for the target token
-                    pixel_attribution = img_attrs[yes_no_tok_idx:yes_no_tok_idx+1]
-                    token_attribution = text_attrs[yes_no_tok_idx:yes_no_tok_idx+1]
+                    pixel_attribution = img_attrs[0:0+1]
+                    token_attribution = text_attrs[0:0+1]
                     target_ids = pred_results["new_ids"].unsqueeze(0)
 
                     # 4. Generate Image Baseline (Model Agnostic!)
