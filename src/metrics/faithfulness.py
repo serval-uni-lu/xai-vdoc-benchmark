@@ -98,6 +98,7 @@ class FaithfulnessMetric(BaseMetric):
         wrapper, # BaseVLMWrapper
         sample: dict[str, Any],
         xai_result: dict[str, Any],
+        required_metrics=None,
     ) -> dict[str, Any]:
         
         inputs = xai_result["inputs"]
@@ -150,7 +151,8 @@ class FaithfulnessMetric(BaseMetric):
             )
 
             results["time_img_pert"] = time.perf_counter() - start_time
-            results.update(self._format_results("img", img_res))
+            results.update(self._format_results("img", img_res,
+                                                required_metrics=required_metrics))
 
         # --- B. Token Perturbation ---
         if tok_attr is not None:
@@ -171,7 +173,8 @@ class FaithfulnessMetric(BaseMetric):
             )
 
             results["time_tok_pert"] = time.perf_counter() - start_time
-            results.update(self._format_results("tok", tok_res))
+            results.update(self._format_results("tok", tok_res,
+                                                required_metrics=required_metrics))
 
         # --- C. Multimodal Synergy ---
         if pixel_attr is not None and tok_attr is not None:
@@ -195,17 +198,22 @@ class FaithfulnessMetric(BaseMetric):
             )
 
             results["time_syn_pert"] = time.perf_counter() - start_time
-            results.update(self._format_results("syn", syn_res))
+            results.update(self._format_results("syn", syn_res,
+                                                required_metrics=required_metrics))
 
         return results
 
     def _format_results(self, prefix: str,
-                        raw_metrics: dict[str, Any]) -> dict[str, Any]:
+                        raw_metrics: dict[str, Any],
+                        required_metrics: list[str] | None = None,
+                        ) -> dict[str, Any]:
         """Flattens arrays and adds modality prefixes."""
+        if required_metrics is None:
+            required_metrics = ["auc"]
+
         formatted = {}
         for key, val in raw_metrics.items():
-            #if "auc" not in key and "curve" not in key:
-            if "auc" not in key:
+            if not any(substring in key for substring in required_metrics):
                 continue
 
             new_key = f"{prefix}_{key}"

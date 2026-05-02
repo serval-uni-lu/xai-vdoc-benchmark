@@ -7,6 +7,7 @@ from src.explainers import (
     RandomExplainer,
     RolloutExplainer,
     TAMExplainer,
+    OracleExplainer,
 )
 from src.models import BaseVLMWrapper
 
@@ -42,6 +43,7 @@ def get_explainer(
         "RolloutExplainer": RolloutExplainer,
         "LLaVACAMExplainer": LLaVACAMExplainer,
         "RandomExplainer": RandomExplainer,
+        "OracleExplainer": OracleExplainer,
     }
 
     if class_name not in registry:

@@ -1,4 +1,5 @@
 import os
+import re
 import glob
 import json
 import torch
@@ -88,10 +89,11 @@ class POPEGroundingDataset(Dataset):
 
         # --- 2. Extract Object Category ---
         # POPE questions are strictly formatted: "Is there a <object> in the image?"
-        object_name = (
-            question.replace("Is there a ", "").replace(" in the image?", "").strip()
-        )
-
+        object_name = re.sub(
+            r"^Is there (a|an)\s+", "", question, flags=re.IGNORECASE
+        ).replace(" in the image?", "")
+        object_name = object_name.strip()
+        
         # --- 3. Get Ground Truth Mask (Your original logic, targeted to the POPE object) ---
         # Extract the numeric ID from the COCO filename (e.g., '000000397133.jpg' -> 397133)
         # img_id = int(img_filename.split('.')[0])
@@ -155,20 +157,54 @@ class POPEOracleDataset(Dataset):
             raise ValueError(f"Error: No .json files found in {self.pope_json_path}")
 
         pope_data = {}
+        print(f"[*] Scanning {len(json_files)} POPE json files...")
+        
+        # 1. Load the individual splits (random, popular, adversarial)
         for json_file in json_files:
             with open(json_file, "r") as f:
-                pope_type = json_file.split("pope_")[-1].split(".json")[0]
-                pope_data[pope_type] = []
-                
+                # Extracts "random", "popular", etc., from the filename
+                split_type = json_file.split("pope_")[-1].split(".json")[0]
+                pope_data[split_type] = []
                 for line in f:
-                    item = json.loads(line)
+                    pope_data[split_type].append(json.loads(line))
+        
+        # 2. Build the deduplicated "all" split
+        all_unique_items = []
+        seen_keys = set()
+        
+        for split_type, items in pope_data.items():
+            for item in items:
+                # Create a unique signature for this exact question
+                unique_key = (item["image"], item["text"])
+                
+                # If we haven't seen this question for this image yet, keep it!
+                if unique_key not in seen_keys:
                     # KEEP ONLY 'YES' SAMPLES FOR THE ORACLE TEST
                     if item["label"] == "yes":
-                        pope_data[pope_type].append(item)
+                        #pope_data[pope_type].append(item)
+
+                        all_unique_items.append(item)
+                        seen_keys.add(unique_key)
+
+        # for json_file in json_files:
+        #     with open(json_file, "r") as f:
+        #         pope_type = json_file.split("pope_")[-1].split(".json")[0]
+        #         pope_data[pope_type] = []
+                
+        #         for line in f:
+        #             item = json.loads(line)
+        #             # KEEP ONLY 'YES' SAMPLES FOR THE ORACLE TEST
+        #             if item["label"] == "yes":
+        #                 pope_data[pope_type].append(item)
                         
-                    # Stop early if we hit our target number of samples
-                    if len(pope_data[pope_type]) >= max_samples:
-                        break
+        #             # Stop early if we hit our target number of samples
+        #             if len(pope_data[pope_type]) >= max_samples:
+        #                 break
+
+        pope_data["all"] = all_unique_items
+        
+        print(f"[*] Built 'all' split. Total unique questions: {len(all_unique_items)}")
+        
         return pope_data
 
     def __len__(self):
@@ -185,7 +221,10 @@ class POPEOracleDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
 
         # --- 2. Extract Object Category ---
-        object_name = question.replace("Is there a ", "").replace(" in the image?", "").strip()
+        object_name = re.sub(
+            r"^Is there (a|an)\s+", "", question, flags=re.IGNORECASE
+        ).replace(" in the image?", "")
+        object_name = object_name.strip()
 
         # --- 3. Get Ground Truth Image Mask (BUG FIX) ---
         # FIX: Extract raw integer from filename (Handles both '000123.jpg' and 'COCO_val2014_000123.jpg')

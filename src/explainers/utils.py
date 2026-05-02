@@ -197,13 +197,13 @@ class XAIVisualizer:
             _ = visualization.visualize_image_attr_multiple(
                 attr_map,
                 rgb_background,
-                methods=["original_image", "heat_map", "blended_heat_map"],
-                signs=["all", "positive", "positive"],
+                methods=["original_image", "blended_heat_map"],
+                signs=["all", "positive"],
                 show_colorbar=True,
                 titles=[
                     "Original Image",
                     f"Attribution: '{target_token_str}'",
-                    "Overlay",
+                    #"Overlay",
                 ],
                 use_pyplot=True,
                 cmap=cmap,

@@ -13,6 +13,7 @@ wheels/
 datasets/
 notebooks/*.py
 logs/
+figs/
 !src/datasets/
 !configs/datasets/
 HF_TOKEN
