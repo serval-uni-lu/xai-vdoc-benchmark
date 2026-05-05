@@ -11,7 +11,6 @@ wheels/
 
 # Folders
 datasets/*
-notebooks/*
 logs/
 figs/
 !src/datasets/
