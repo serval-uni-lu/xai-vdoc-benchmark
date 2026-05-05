@@ -10,10 +10,11 @@ wheels/
 .venv
 
 # Folders
-datasets/
-notebooks/*.py
+datasets/*
+notebooks/*
 logs/
 figs/
 !src/datasets/
+!datasets/README.md
 !configs/datasets/
 HF_TOKEN
