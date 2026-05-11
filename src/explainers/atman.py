@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from src.explainers import BaseExplainer
-from src.explainers.utils import align_llm_visuals_to_pixels
+from src.utils.xai_utils import align_llm_visuals_to_pixels
 from src.models import BaseVLMWrapper
 
 

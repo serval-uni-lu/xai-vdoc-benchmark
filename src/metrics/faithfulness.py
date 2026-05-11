@@ -8,7 +8,7 @@ from PIL import ImageFilter
 from torch import Tensor
 
 from src.metrics.base import BaseMetric
-from src.metrics.faithfulness_utils import (
+from src.utils.faithfulness_utils import (
     _reshape_pixels_back_faithfulness,
     _reshape_pixels_faithfulness,
     get_most_important_tokens_multimodal,

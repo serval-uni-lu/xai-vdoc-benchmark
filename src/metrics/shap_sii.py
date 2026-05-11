@@ -6,7 +6,7 @@ import torch
 from shapiq import Game
 from torch import Tensor
 
-from src.metrics.faithfulness_utils import (
+from src.utils.faithfulness_utils import (
     _reshape_pixels_back_faithfulness,
     _reshape_pixels_faithfulness,
     make_blur_baseline,

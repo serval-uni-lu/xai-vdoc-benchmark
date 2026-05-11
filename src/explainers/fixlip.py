@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import shapiq
 
 # Assuming pred_probs is available in your repository
-from src.metrics.faithfulness_utils import pred_probs
+from src.utils.faithfulness_utils import pred_probs
 
 class GenerativeVLMGame(shapiq.Game):
     """

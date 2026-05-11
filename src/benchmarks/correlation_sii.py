@@ -14,11 +14,11 @@ from PIL import ImageFilter
 
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader 
-from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl, get_processed_indices
+from src.utils.xai_utils import find_ynvqa_token_index, save_to_jsonl, get_processed_indices
 from src.models.factory import load_vlm
 from src.explainers.factory import get_explainer
 from src.metrics.shap_sii import eval_sii_auc_with_class
-from src.metrics.faithfulness_utils import (
+from src.utils.faithfulness_utils import (
     _reshape_pixels_back_faithfulness,
     _reshape_pixels_faithfulness,
     get_most_important_tokens_multimodal,

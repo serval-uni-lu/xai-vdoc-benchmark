@@ -11,7 +11,7 @@ from tqdm import tqdm
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader
 from src.explainers.factory import get_explainer
-from src.explainers.utils import find_ynvqa_token_index, save_to_jsonl, load_yaml, get_processed_indices
+from src.utils.xai_utils import find_ynvqa_token_index, save_to_jsonl, load_yaml, get_processed_indices
 from src.metrics import FaithfulnessMetric
 from src.models.factory import load_vlm
 

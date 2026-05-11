@@ -10,9 +10,9 @@ from tqdm import tqdm
 # --- ABSTRACTED FACTORIES & UTILS ---
 from src.datasets.factory import get_dataloader
 from src.explainers.factory import get_explainer
-from src.explainers.utils import load_yaml, save_to_jsonl, get_processed_indices
+from src.utils.xai_utils import load_yaml, save_to_jsonl, get_processed_indices
 from src.metrics import FaithfulnessMetric, PlausibilityMetric
-from src.metrics.plausibility_utils import OntologyMapper, ids_to_word_groups
+from src.utils.plausibility_utils import OntologyMapper, ids_to_word_groups
 from src.models.factory import load_vlm
 
 
