@@ -88,9 +88,7 @@ class LlavaWrapper(BaseVLMWrapper):
         input_ids: torch.Tensor,
     ) -> torch.Tensor:
 
-        image_embeds = torch.cat(image_embeds, dim=0).to(
-            text_embeds.device, text_embeds.dtype
-        )
+        image_embeds = torch.cat(image_embeds, dim=0).to(text_embeds.device, text_embeds.dtype)
         special_image_mask = self.model.model.get_placeholder_mask(
             input_ids, inputs_embeds=text_embeds, image_features=image_embeds
         )

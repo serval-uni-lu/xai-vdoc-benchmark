@@ -1,7 +1,8 @@
 import pandas as pd
-import torch
 from torch.utils.data import Dataset
+
 from datasets import load_dataset
+
 
 class MMVPDataset(Dataset):
     def __init__(self, hf_path="MMVP/MMVP", split="train", transform=None):

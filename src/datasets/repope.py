@@ -1,9 +1,10 @@
-import os
-import re
 import glob
 import json
-import torch
+import os
+import re
+
 import numpy as np
+import torch
 from PIL import Image
 from pycocotools.coco import COCO
 from torch.utils.data import Dataset
@@ -47,7 +48,7 @@ class POPEGroundingDataset(Dataset):
         
         # 1. Load the individual splits (random, popular, adversarial)
         for json_file in json_files:
-            with open(json_file, "r") as f:
+            with open(json_file) as f:
                 # Extracts "random", "popular", etc., from the filename
                 split_type = json_file.split("pope_")[-1].split(".json")[0]
                 pope_data[split_type] = []
@@ -58,7 +59,7 @@ class POPEGroundingDataset(Dataset):
         all_unique_items = []
         seen_keys = set()
         
-        for split_type, items in pope_data.items():
+        for _, items in pope_data.items():
             for item in items:
                 # Create a unique signature for this exact question
                 unique_key = (item["image"], item["text"])
@@ -161,7 +162,7 @@ class POPEOracleDataset(Dataset):
         
         # 1. Load the individual splits (random, popular, adversarial)
         for json_file in json_files:
-            with open(json_file, "r") as f:
+            with open(json_file) as f:
                 # Extracts "random", "popular", etc., from the filename
                 split_type = json_file.split("pope_")[-1].split(".json")[0]
                 pope_data[split_type] = []
@@ -172,19 +173,16 @@ class POPEOracleDataset(Dataset):
         all_unique_items = []
         seen_keys = set()
         
-        for split_type, items in pope_data.items():
+        for _, items in pope_data.items():
             for item in items:
                 # Create a unique signature for this exact question
                 unique_key = (item["image"], item["text"])
                 
                 # If we haven't seen this question for this image yet, keep it!
-                if unique_key not in seen_keys:
-                    # KEEP ONLY 'YES' SAMPLES FOR THE ORACLE TEST
-                    if item["label"] == "yes":
-                        #pope_data[pope_type].append(item)
+                if unique_key not in seen_keys and item["label"] == "yes":
 
-                        all_unique_items.append(item)
-                        seen_keys.add(unique_key)
+                    all_unique_items.append(item)
+                    seen_keys.add(unique_key)
 
         # for json_file in json_files:
         #     with open(json_file, "r") as f:
@@ -212,9 +210,8 @@ class POPEOracleDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.pope_data[self.pope_type][idx]
-        img_filename = item["image"]  
-        question = item["text"]  
-        label = item["label"]  
+        img_filename = item["image"]
+        question = item["text"]
 
         # --- 1. Load Image ---
         img_path = os.path.join(self.data_path, self.coco_split, img_filename)

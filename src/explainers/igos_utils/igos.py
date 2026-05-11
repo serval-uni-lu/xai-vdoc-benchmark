@@ -138,11 +138,12 @@ def gen_explanations_qwenvl(
 
     method = iGOS_pp
 
-    i_obj = 0
-    total_del, total_ins, total_time = 0, 0, 0
-    all_del_scores = []
-    all_ins_scores = []
-    save_list = []
+    # i_obj = 0
+    # total_del, total_ins, total_time = 0, 0, 0
+    # all_del_scores = []
+    # all_ins_scores = []
+    # save_list = []
+    total_time = 0
 
     # 开始处理数据
     image_size = [image.size]
@@ -163,15 +164,15 @@ def gen_explanations_qwenvl(
             ],
         }
     ]
-    messages2 = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": blur},
-                {"type": "text", "text": text_prompt},
-            ],
-        }
-    ]
+    # messages2 = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "image", "image": blur},
+    #             {"type": "text", "text": text_prompt},
+    #         ],
+    #     }
+    # ]
     text = processor.apply_chat_template(
         messages1, tokenize=False, add_generation_prompt=True
     )
@@ -204,7 +205,7 @@ def gen_explanations_qwenvl(
         )
         generated_ids_trimmed = [  # 去掉图像和prompt的文本
             out_ids[len(in_ids) :]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
         ]
     output_text = processor.batch_decode(
         generated_ids_trimmed,
@@ -215,7 +216,7 @@ def gen_explanations_qwenvl(
     selected_token_id = [i for i in range(len(selected_token_word_id))]
     target_token_position = np.array(selected_token_id) + len(inputs["input_ids"][0])
 
-    if positions == None:
+    if positions is None:
         positions, keywords = find_keywords(
             model,
             inputs,
@@ -236,11 +237,11 @@ def gen_explanations_qwenvl(
 
     print(keywords)
 
-    if select_word_id != None:
-        for position, word_id in zip(positions, select_word_id):
+    if select_word_id is not None:
+        for position, word_id in zip(positions, select_word_id, strict=False):
             generated_ids_trimmed[0][position] = word_id
 
-    pred_data = dict()
+    pred_data = {}
     pred_data["labels"] = generated_ids_trimmed
     pred_data["keywords"] = positions
     pred_data["boxes"] = np.array([[0, 0, input_size[0], input_size[1]]])
@@ -324,24 +325,25 @@ def gen_explanations_internvl(
     init_val = 0.0
     L1 = 1.0
     L2 = 0.1
-    gamma = 1.0
+    # gamma = 1.0
     L3 = 10.0
-    momentum = 5
+    # momentum = 5
     ig_iter = 10
     iterations = 5
     lr = 10
 
     method = iGOS_pp
 
-    i_obj = 0
-    total_del, total_ins, total_time = 0, 0, 0
-    all_del_scores = []
-    all_ins_scores = []
-    save_list = []
+    # i_obj = 0
+    total_time = 0
+    # total_del, total_ins = 0, 0
+    # all_del_scores = []
+    # all_ins_scores = []
+    # save_list = []
 
     # 开始处理数据
     image_size = [image.size]
-    kernel_size = get_kernel_size(image.size)
+    # kernel_size = get_kernel_size(image.size)
 
     # tensor
     messages1 = [
@@ -362,7 +364,8 @@ def gen_explanations_internvl(
         return_dict=True,
         return_tensors="pt",
     ).to(model.device, dtype=torch.bfloat16)
-    # inputs_blur = processor.apply_chat_template(messages1, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt").to(model.device, dtype=torch.bfloat16)
+    # inputs_blur = processor.apply_chat_template(messages1, add_generation_prompt=True,
+    # tokenize=True, return_dict=True, return_tensors="pt").to(model.device, dtype=torch.bfloat16)
 
     image_tensor = inputs["pixel_values"]
     # blur_tensor = inputs_blur['pixel_values']
@@ -378,7 +381,7 @@ def gen_explanations_internvl(
         )
         generated_ids_trimmed = [  # 去掉图像和prompt的文本
             out_ids[len(in_ids) :]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=False)
         ]
     output_text = processor.batch_decode(
         generated_ids_trimmed,
@@ -390,7 +393,7 @@ def gen_explanations_internvl(
     selected_token_id = [i for i in range(len(selected_token_word_id))]
     target_token_position = np.array(selected_token_id) + len(inputs["input_ids"][0])
 
-    if positions == None:
+    if positions is None:
         positions, keywords = find_keywords(
             model,
             inputs,
@@ -411,11 +414,11 @@ def gen_explanations_internvl(
 
     print(keywords)
 
-    if select_word_id != None:
-        for position, word_id in zip(positions, select_word_id):
+    if select_word_id is not None:
+        for position, word_id in zip(positions, select_word_id, strict=False):
             generated_ids_trimmed[0][position] = word_id
 
-    pred_data = dict()
+    pred_data = {}
     pred_data["labels"] = generated_ids_trimmed
     pred_data["keywords"] = positions
     pred_data["boxes"] = np.array([[0, 0, input_size[0], input_size[1]]])
@@ -459,7 +462,7 @@ def gen_explanations_internvl(
         input_size=input_size,
         out_size=size,
     )
-    for l_i, label in enumerate(pred_data["labels"]):
+    for _, label in enumerate(pred_data["labels"]):
         label = label.unsqueeze(0)
         keyword = pred_data["keywords"]
         now = time.time()
@@ -550,10 +553,8 @@ def interval_score(
     for single_img in local_images:
         # single_img = single_img.half()
 
-        if processor == None:
-            single_input = single_img
-        else:
-            single_input = processor(single_img)
+        
+        single_input = single_img if processor is None else processor(single_img)
 
         probs = pred_probs(
             model,
@@ -685,17 +686,17 @@ def iGOS_pp(
     )
     masks_ins = masks_ins * init_mask.cuda()
     masks_ins = Variable(masks_ins, requires_grad=True)
-    prompt = kwargs.get("prompt")
-    image_size = kwargs.get("image_size")
+    # prompt = kwargs.get("prompt")
+    # image_size = kwargs.get("image_size")
     positions = kwargs.get("positions")
-    resolution = kwargs.get("resolution")
+    # resolution = kwargs.get("resolution")
 
     if opt == "NAG":
         cita_d = torch.zeros(1).cuda()
         cita_i = torch.zeros(1).cuda()
 
-    prompt = kwargs.get("prompt")
-    image_size = kwargs.get("image_size")
+    # prompt = kwargs.get("prompt")
+    # image_size = kwargs.get("image_size")
     positions = kwargs.get("positions")
     (
         losses_del,
@@ -831,7 +832,10 @@ def iGOS_pp(
         losses_tv.append(loss_tv.item())
         losses_l2.append(loss_l2.item())
         print(
-            f"iteration: {i} lr: {lr:.4f} loss_comb_del: {loss_comb_del:.4f}, loss_comb_ins: {loss_comb_ins:.4f}, loss_del: {loss_del:.4f}, loss_ins: {loss_ins:.4f}, loss_l1: {loss_l1.item():.4f}, loss_tv: {loss_tv.item():.4f}, loss_l2: {loss_l2.item():.4f}"
+            f"iteration: {i} lr: {lr:.4f} loss_comb_del: {loss_comb_del:.4f}, \
+                loss_comb_ins: {loss_comb_ins:.4f}, loss_del: {loss_del:.4f}, \
+                    loss_ins: {loss_ins:.4f}, loss_l1: {loss_l1.item():.4f}, \
+                        loss_tv: {loss_tv.item():.4f}, loss_l2: {loss_l2.item():.4f}"
         )
 
     return (

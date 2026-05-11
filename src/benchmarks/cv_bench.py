@@ -1,8 +1,9 @@
 import argparse
+import contextlib
+import gc
 import os
 import time
 import traceback
-import gc
 
 import torch
 from tqdm import tqdm
@@ -10,10 +11,9 @@ from tqdm import tqdm
 # Ensure you import the new function we built!
 from src.datasets.factory import get_dataloader
 from src.explainers.factory import get_explainer
-from src.utils.xai_utils import find_mcvqa_token_index, save_to_jsonl, load_yaml, get_processed_indices
 from src.metrics import FaithfulnessMetric
 from src.models.factory import load_vlm
-
+from src.utils.xai_utils import find_mcvqa_token_index, get_processed_indices, load_yaml, save_to_jsonl
 
 
 def run_benchmark(args):
@@ -30,9 +30,7 @@ def run_benchmark(args):
 
     explainer_configs = [load_yaml(path) for path in explainer_paths]
 
-    output_dir = os.path.join(
-        args.output_dir, model_config["name"], f"{dataset_config['name']}"
-    )
+    output_dir = os.path.join(args.output_dir, model_config["name"], f"{dataset_config['name']}")
     os.makedirs(output_dir, exist_ok=True)
 
     needs_attention = any(cfg.get("requires_attention", False) for cfg in explainer_configs)
@@ -49,7 +47,7 @@ def run_benchmark(args):
         "model_config": model_config,
         "attn_implementation": attn_mode,
         "gpu_node": args.gpu_id,
-        "output_attentions": needs_attention
+        "output_attentions": needs_attention,
     }
 
     dl = get_dataloader(dataset_config)
@@ -67,11 +65,10 @@ def run_benchmark(args):
     )
 
     for explainer_path in explainer_paths:
-        explainer, explainer_name = get_explainer(
-            explainer_path, model_wrapper, model_config
-        )
+        explainer = None
 
         try:
+            explainer, explainer_name = get_explainer(explainer_path, model_wrapper, model_config)
             print(f"\n{'=' * 50}\n[*] Evaluating: {explainer_name} on {model_config['name']}\n{'=' * 50}")
 
             run_name = f"{model_config['name']}_{dataset_config['name']}_{explainer_name}"
@@ -79,9 +76,7 @@ def run_benchmark(args):
 
             # --- RESUME LOGIC ---
             processed_indices = get_processed_indices(
-                output_file=output_file,
-                total_dataset_len=len(dl),
-                max_samples=args.max_samples
+                output_file=output_file, total_dataset_len=len(dl), max_samples=args.max_samples
             )
 
             # --- RATIO TRACKERS ---
@@ -100,27 +95,28 @@ def run_benchmark(args):
                 if model_config["name"] == "llava":
                     constraint = "\nAnswer"
                 else:
-                    constraint = "\nAnswer directly with only the letter inside parentheses, and nothing else. \nAnswer:"
+                    constraint = "\nAnswer directly with only the letter \
+                        inside parentheses, and nothing else. \nAnswer:"
                 img = sample["image"]
                 question = sample["question"] + constraint
                 label = sample["label"]
                 category = sample["category"]
-            
 
                 try:
                     # 1. Forward Pass
                     inputs = model_wrapper.get_inputs(img, question)
                     pred_results = model_wrapper.predict(inputs, return_logits=True)
-                    
+
                     full_text = pred_results.get("text", "")
-                    if isinstance(full_text, list): full_text = full_text[0]
+                    if isinstance(full_text, list):
+                        full_text = full_text[0]
 
                     # 2. Identify the Decision Token using our new function
                     # It returns a tuple: (index, token_string)
                     decision_idx, decision_token_str = find_mcvqa_token_index(
                         pred_results["new_ids"],
                         tokenizer=tok,
-                        choices=['a', 'b', 'c', 'd', 'e', 'f'],
+                        choices=["a", "b", "c", "d", "e", "f"],
                     )
 
                     total_processed_this_run += 1
@@ -128,7 +124,7 @@ def run_benchmark(args):
                     # --- FAILURE HANDLING: If the parser couldn't find the answer ---
                     if decision_idx == -1:
                         parse_failures_this_run += 1
-                        
+
                         # Log the failure so you can analyze the bad text later, but SKIP the XAI math
                         log_dict = {
                             "sample_idx": idx,
@@ -150,7 +146,7 @@ def run_benchmark(args):
                     text_attrs, img_attrs = explainer.attribute(
                         img,
                         text=question,
-                        target_indices=[decision_idx], # Using the specific index!
+                        target_indices=[decision_idx],  # Using the specific index!
                         pred_results=pred_results,
                     )
                     xai_gen_time = time.perf_counter() - start_time
@@ -174,8 +170,8 @@ def run_benchmark(args):
                         "category": category,
                         "prediction": full_text,
                         "parse_success": True,
-                        "decision_token_idx": decision_idx,      # Logged for analysis
-                        "decision_token_str": decision_token_str, # Logged for analysis
+                        "decision_token_idx": decision_idx,  # Logged for analysis
+                        "decision_token_str": decision_token_str,  # Logged for analysis
                         "xai_gen_time": xai_gen_time,
                     }
                     log_dict.update(faith_scores)
@@ -183,27 +179,27 @@ def run_benchmark(args):
 
                     del pred_results, img_attrs, text_attrs
                     torch.cuda.empty_cache()
-                
+
                 except RuntimeError as e:
                     if "CUDA out of memory" in str(e):
                         print(f"\n[!] CUDA OOM on sample {idx}. Image/Text was too large. Skipping...")
-                        
+
                         # 1. Delete any massive variables that might have been partially created
-                        for var in ['inputs', 'pred_results', 'xai_result', 'img_attrs', 'text_attrs']:
+                        for var in ["inputs", "pred_results", "xai_result", "img_attrs", "text_attrs"]:
                             if var in locals():
                                 del locals()[var]
-                                
+
                         # 2. Force Python garbage collection
                         gc.collect()
-                        
+
                         # 3. Flush the GPU memory back to the OS
                         torch.cuda.empty_cache()
-                        
+
                         # 4. Log the failure so your metrics don't get skewed
                         log_dict = {"sample_idx": idx, "error": "OOM_SKIPPED"}
                         save_to_jsonl(log_dict, output_file)
-                        
-                        continue # Move safely to the next sample
+
+                        continue  # Move safely to the next sample
 
                 except Exception as e:
                     print(f"\n[!] Explainer failed on sample {idx}: {e}")
@@ -214,23 +210,35 @@ def run_benchmark(args):
             if total_processed_this_run > 0:
                 failure_rate = (parse_failures_this_run / total_processed_this_run) * 100
                 print(f"\n[*] Finished {explainer_name}.")
-                print(f"[*] Parse Diagnostics: {parse_failures_this_run} failed out of {total_processed_this_run} attempted ({failure_rate:.2f}% failure rate).")
-            
-            if hasattr(explainer, "cleanup"):
-                explainer.cleanup()
-            del explainer
-            torch.cuda.empty_cache()
+                print(
+                    f"[*] Parse Diagnostics: {parse_failures_this_run} failed out of \
+                      {total_processed_this_run} attempted ({failure_rate:.2f}% failure rate)."
+                )
 
         except Exception as e:
             print(f"\n[!] ERROR: Explainer '{explainer_path}' crashed completely!")
             print(f"[!] Exception Details: {e}")
+            print("[!] Skipping this explainer and moving to the next one...\n")
+
+            # 2. Tell W&B that this specific run crashed, so it doesn't hang
+            # if wandb.run is not None:
+            #     wandb.finish(exit_code=1)
+
+            # 3. Move on to the next explainer!
+            continue
+
+        finally:
+            print(f"[*] Finished {explainer_path}. Cleaning up GPU memory...")
+            # 1. Safely force-delete the explainer from VRAM if it initialized
             if explainer is not None:
+                print("[*] Cleaning up GPU memory...")
                 if hasattr(explainer, "cleanup"):
-                    try: explainer.cleanup()
-                    except: pass
+                    with contextlib.suppress(Exception):
+                        explainer.cleanup()
+
                 del explainer
             torch.cuda.empty_cache()
-            continue
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run VLM XAI Benchmark")
@@ -246,4 +254,3 @@ if __name__ == "__main__":
         run_benchmark(args)
     except Exception as e:
         print(f"[FATAL] Benchmark crashed: {e}")
-

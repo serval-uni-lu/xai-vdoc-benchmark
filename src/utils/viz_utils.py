@@ -1,14 +1,11 @@
-from typing import Optional
-
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
-from torch import Tensor
 import torch.nn.functional as F
 from captum.attr import visualization
 from matplotlib.colors import LinearSegmentedColormap
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from PIL import Image
-
+from torch import Tensor
 
 
 class XAIVisualizer:
@@ -31,11 +28,7 @@ class XAIVisualizer:
         )
         return cmap
 
-    def _resolve_target_ids(
-        self,
-        target_ids: Tensor,
-        target_indices: int | list[int] | None
-    ) -> Tensor:
+    def _resolve_target_ids(self, target_ids: Tensor, target_indices: int | list[int] | None) -> Tensor:
         """
         Helper to cleanly slice the target_ids tensor based on the requested indices.
         Returns a 1D tensor of the specific token IDs we are explaining.
@@ -45,10 +38,7 @@ class XAIVisualizer:
         if target_indices is None:
             return flat_targets  # Return all of them
 
-        if isinstance(target_indices, int):
-            indices = [target_indices]
-        else:
-            indices = target_indices
+        indices = [target_indices] if isinstance(target_indices, int) else target_indices
 
         # Safely extract only the requested tokens
         valid_indices = [idx for idx in indices if idx < len(flat_targets)]
@@ -75,9 +65,8 @@ class XAIVisualizer:
         for i, tok_id in enumerate(input_ids_list):
             if tok_id in special_token_ids:
                 continue
-            if semantic_mask is not None:
-                if not semantic_mask[i].item():
-                    continue
+            if semantic_mask is not None and not semantic_mask[i].item():
+                continue
             valid_indices.append(i)
 
         if len(valid_indices) == 0:
@@ -175,9 +164,7 @@ class XAIVisualizer:
         ).squeeze(1)
 
         # 3. Prepare Background
-        rgb_background = (
-            np.array(original_image.convert("RGB")).astype(np.float32) / 255.0
-        )
+        rgb_background = np.array(original_image.convert("RGB")).astype(np.float32) / 255.0
 
         print("\n" + "=" * 50)
         print("IMAGE ATTRIBUTIONS")
@@ -201,7 +188,7 @@ class XAIVisualizer:
                 titles=[
                     "Original Image",
                     f"Attribution: '{target_token_str}'",
-                    #"Overlay",
+                    # "Overlay",
                 ],
                 use_pyplot=True,
                 cmap=cmap,
@@ -219,7 +206,7 @@ class XAIVisualizer:
     ):
         num_tokens = img_attr.shape[0]
         orig_w, orig_h = original_image.size
-        specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
+        # specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
 
         # 1. Reshape Attributions
         if img_attr.dim() == 2:
@@ -251,7 +238,7 @@ class XAIVisualizer:
 
         # We assume you only want to plot the heatmap for the FIRST generated token for the grid
         # If you want a specific token, ensure target_indices is passed correctly.
-        target_token_str = self.processor.decode([specific_target_ids[0]])
+        # target_token_str = self.processor.decode([specific_target_ids[0]])
         attr_map = attrs_upsampled[0].unsqueeze(-1).cpu().detach().numpy()
 
         # 4. Generate the plot using Captum
@@ -259,20 +246,21 @@ class XAIVisualizer:
         fig, ax = visualization.visualize_image_attr_multiple(
             attr_map,
             rgb_background,
-            methods=["blended_heat_map"], 
-            signs=["positive"], # usually 'positive' is best for text-to-image grounding
-            show_colorbar=False, # Disable colorbar so it fits nicely in the grid
+            methods=["blended_heat_map"],
+            signs=["positive"],  # usually 'positive' is best for text-to-image grounding
+            show_colorbar=False,  # Disable colorbar so it fits nicely in the grid
             titles=[f"{explainer_name}"],
-            use_pyplot=False, # <--- Set to False so it doesn't block the loop
+            use_pyplot=False,  # <--- Set to False so it doesn't block the loop
             cmap=cmap,
         )
 
         # 5. Save to disk if a path is provided
         if save_path:
             import matplotlib.pyplot as plt
+
             # bbox_inches='tight' removes annoying white margins
-            fig.savefig(save_path, format='pdf', bbox_inches='tight', dpi=300)
-            plt.close(fig) # Free up memory
+            fig.savefig(save_path, format="pdf", bbox_inches="tight", dpi=300)
+            plt.close(fig)  # Free up memory
             print(f"[+] Saved {explainer_name} heatmap to {save_path}")
 
     def save_combined_pdf(
@@ -285,8 +273,8 @@ class XAIVisualizer:
         explainer_name: str,
         save_path: str,
         target_indices: int | list[int] | None = None,
-        special_token_ids: Optional[list] = None,
-        semantic_mask: Optional[Tensor] = None,
+        special_token_ids: list | None = None,
+        semantic_mask: Tensor | None = None,
     ):
         """
         Creates a single PDF with the image heatmap on top and the text bar chart directly below it.
@@ -295,13 +283,13 @@ class XAIVisualizer:
         # 1. Setup the Matplotlib Figure (2 Rows, 1 Column)
         # ==========================================
         # height_ratios=[3, 1] makes the image 3 times taller than the bar chart
-        fig, axes = plt.subplots(2, 1, figsize=(3.5, 4.5), gridspec_kw={'height_ratios': [3, 1]})
-        
+        fig, axes = plt.subplots(2, 1, figsize=(3.5, 4.5), gridspec_kw={"height_ratios": [3, 1]})
+
         # ==========================================
         # 2. Process & Plot Image (Top Axis - axes[0])
         # ==========================================
         orig_w, orig_h = original_image.size
-        specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
+        # specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
 
         # Reshape image attributions
         if img_attr.dim() == 2:
@@ -330,9 +318,9 @@ class XAIVisualizer:
             sign="positive",
             show_colorbar=False,
             title=explainer_name,
-            plt_fig_axis=(fig, axes[0]), # <--- THE SECRET SAUCE
+            plt_fig_axis=(fig, axes[0]),  # <--- THE SECRET SAUCE
             use_pyplot=False,
-            cmap=cmap
+            cmap=cmap,
         )
 
         # ==========================================
@@ -342,7 +330,8 @@ class XAIVisualizer:
         input_ids_list = input_ids[0].tolist()
 
         valid_indices = [
-            i for i, tok_id in enumerate(input_ids_list) 
+            i
+            for i, tok_id in enumerate(input_ids_list)
             if tok_id not in special_token_ids and (semantic_mask is None or semantic_mask[i].item())
         ]
 
@@ -358,24 +347,24 @@ class XAIVisualizer:
             tokens = [self.processor.decode([tok]) for tok in filtered_input_ids]
 
             # Draw the bar chart on axes[1]
-            colors = ['#1f77b4' if score > 0 else '#d62728' for score in txt_scores]
+            colors = ["#1f77b4" if score > 0 else "#d62728" for score in txt_scores]
             axes[1].bar(range(len(tokens)), txt_scores, color=colors)
 
             # Clean formatting
             axes[1].set_xticks(range(len(tokens)))
-            axes[1].set_xticklabels(tokens, rotation=45, ha='right', fontsize=9)
-            axes[1].set_yticks([]) # Hide Y axis
-            axes[1].spines['top'].set_visible(False)
-            axes[1].spines['right'].set_visible(False)
-            axes[1].spines['left'].set_visible(False)
+            axes[1].set_xticklabels(tokens, rotation=45, ha="right", fontsize=9)
+            axes[1].set_yticks([])  # Hide Y axis
+            axes[1].spines["top"].set_visible(False)
+            axes[1].spines["right"].set_visible(False)
+            axes[1].spines["left"].set_visible(False)
         else:
-            axes[1].axis('off') # Hide axis if no text
+            axes[1].axis("off")  # Hide axis if no text
 
         # ==========================================
         # 4. Save the Unified PDF
         # ==========================================
-        fig.tight_layout() # Fixes overlapping text/titles
-        fig.savefig(save_path, format='pdf', bbox_inches='tight', dpi=300)
+        fig.tight_layout()  # Fixes overlapping text/titles
+        fig.savefig(save_path, format="pdf", bbox_inches="tight", dpi=300)
         plt.close(fig)
 
     def save_combined_highlight_pdf(
@@ -388,8 +377,8 @@ class XAIVisualizer:
         explainer_name: str,
         save_path: str,
         target_indices: int | list[int] | None = None,
-        special_token_ids: Optional[list] = None,
-        semantic_mask: Optional[Tensor] = None,
+        special_token_ids: list | None = None,
+        semantic_mask: Tensor | None = None,
     ):
         """
         Creates a single PDF with the image heatmap on top and inline colored text highlights below.
@@ -398,13 +387,13 @@ class XAIVisualizer:
         # 1. Setup the Matplotlib Figure (2 Rows, 1 Column)
         # ==========================================
         # height_ratios=[3, 1.2] gives the text area just enough room for 2-3 lines of wrapped text
-        fig, axes = plt.subplots(2, 1, figsize=(3.5, 4.5), gridspec_kw={'height_ratios': [3, 1.2]})
-        
+        fig, axes = plt.subplots(2, 1, figsize=(3.5, 4.5), gridspec_kw={"height_ratios": [3, 1.2]})
+
         # ==========================================
         # 2. Process & Plot Image (Top Axis - axes[0])
         # ==========================================
         orig_w, orig_h = original_image.size
-        specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
+        # specific_target_ids = self._resolve_target_ids(target_ids, target_indices)
 
         if img_attr.dim() == 2:
             num_patches = img_attr.shape[1]
@@ -431,23 +420,24 @@ class XAIVisualizer:
             sign="positive",
             show_colorbar=False,
             title=explainer_name,
-            plt_fig_axis=(fig, axes[0]), 
+            plt_fig_axis=(fig, axes[0]),
             use_pyplot=False,
-            cmap=cmap_img
+            cmap=cmap_img,
         )
 
         # ==========================================
         # 3. Process & Plot Text Highlights (Bottom Axis - axes[1])
         # ==========================================
-        axes[1].axis('off') # Hide borders and ticks
+        axes[1].axis("off")  # Hide borders and ticks
         axes[1].set_xlim(0, 1)
         axes[1].set_ylim(0, 1)
-        
+
         special_token_ids = special_token_ids or []
         input_ids_list = input_ids[0].tolist()
 
         valid_indices = [
-            i for i, tok_id in enumerate(input_ids_list) 
+            i
+            for i, tok_id in enumerate(input_ids_list)
             if tok_id not in special_token_ids and (semantic_mask is None or semantic_mask[i].item())
         ]
 
@@ -462,9 +452,7 @@ class XAIVisualizer:
             tokens = [self.processor.decode([tok]) for tok in filtered_input_ids]
 
             # Setup Red-White-Green colormap
-            cmap_text = mcolors.LinearSegmentedColormap.from_list(
-                "red_white_green", ["#ff4d4d", "#ffffff", "#4dff4d"]
-            )
+            cmap_text = mcolors.LinearSegmentedColormap.from_list("red_white_green", ["#ff4d4d", "#ffffff", "#4dff4d"])
 
             # Draw the highlighted words with automatic wrapping
             fig.canvas.draw()
@@ -472,22 +460,25 @@ class XAIVisualizer:
             x_pos, y_pos = 0.0, 0.8
             line_spacing = 0.35
 
-            for word, score in zip(tokens, txt_scores):
-                color_idx = (score + 1) / 2.0 
+            for word, score in zip(tokens, txt_scores, strict=False):
+                color_idx = (score + 1) / 2.0
                 bg_color = cmap_text(color_idx)
-                
+
                 # Draw the text box
                 t = axes[1].text(
-                    x_pos, y_pos, word, fontsize=9, 
-                    bbox=dict(facecolor=bg_color, edgecolor='none', boxstyle='round,pad=0.2', alpha=0.8)
+                    x_pos,
+                    y_pos,
+                    word,
+                    fontsize=9,
+                    bbox={"facecolor": bg_color, "edgecolor": "none", "boxstyle": "round,pad=0.2", "alpha": 0.8},
                 )
-                
+
                 # Calculate width to place the next word
                 bbox = t.get_window_extent(renderer).transformed(axes[1].transData.inverted())
-                x_pos += bbox.width + 0.02 # Add space between words
-                
+                x_pos += bbox.width + 0.02  # Add space between words
+
                 # Drop to next line if we hit the right edge
-                if x_pos > 0.95: 
+                if x_pos > 0.95:
                     x_pos = 0.0
                     y_pos -= line_spacing
 
@@ -495,6 +486,5 @@ class XAIVisualizer:
         # 4. Save the Unified PDF
         # ==========================================
         fig.tight_layout()
-        fig.savefig(save_path, format='pdf', bbox_inches='tight', dpi=300)
+        fig.savefig(save_path, format="pdf", bbox_inches="tight", dpi=300)
         plt.close(fig)
-

@@ -200,7 +200,8 @@ def interval_score(
         interval_masks = [up_mask.unsqueeze(1) * intervals for up_mask in up_masks]
         local_images = [
             phi(image.unsqueeze(1), base.unsqueeze(1), interval_mask)
-            for image, base, interval_mask in zip(images, baseline, interval_masks)
+            for image, base, interval_mask in zip(images, baseline, interval_masks,
+                                                  strict=False)
         ]
 
         if noise:
@@ -354,14 +355,14 @@ def metric(
         # Compute the step size
         step = max(1, num_pixels // 50)
         # Used for indexing with batch sizes
-        l = torch.arange(1)
+        idx = torch.arange(1)
         # The unmasked score
         og_scores = score_output(
-            args, image, image_size, model, model_name, l, label, prompt, positions
+            args, image, image_size, model, model_name, idx, label, prompt, positions
         )
         # The baseline score
         blur_scores = score_output(
-            args, baseline, image_size, model, model_name, l, label, prompt, positions
+            args, baseline, image_size, model, model_name, idx, label, prompt, positions
         )
         # Initial values for the curves
         del_curve = [og_scores]
@@ -383,7 +384,8 @@ def metric(
             # Mask the image for deletion
             if isinstance(image, list):
                 del_image = [
-                    phi(x, y, z).half() for x, y, z in zip(image, baseline, up_mask)
+                    phi(x, y, z).half() for x, y, z in zip(image, baseline, up_mask,
+                                                            strict=False)
                 ]
             else:
                 del_image = phi(image, baseline, up_mask).half()
@@ -393,8 +395,8 @@ def metric(
                 del_image,
                 image_size,
                 model,
-                model_name,
-                l,
+                # model_name,
+                # l,
                 label,
                 prompt,
                 positions,
@@ -411,7 +413,8 @@ def metric(
             # Mask the image for insertion
             if isinstance(image, list):
                 ins_image = [
-                    phi(x, y, z).half() for x, y, z in zip(baseline, image, up_mask)
+                    phi(x, y, z).half() for x, y, z in zip(baseline, image, up_mask,
+                                                           strict=False)
                 ]
             else:
                 ins_image = phi(baseline, image, up_mask).half()
@@ -422,8 +425,8 @@ def metric(
                 ins_image,
                 image_size,
                 model,
-                model_name,
-                l,
+                # model_name,
+                # l,
                 label,
                 prompt,
                 positions,
@@ -441,14 +444,16 @@ def metric(
         del_scores /= num_pixels
         ins_scores /= num_pixels
 
-        del_curve = list(map(lambda x: [y.item() for y in x], zip(*del_curve)))
-        ins_curve = list(map(lambda x: [y.item() for y in x], zip(*ins_curve)))
+        # del_curve = list(map(lambda x: [y.item() for y in x], zip(*del_curve)))
+        del_curve = [[y.item() for y in x] for x in zip(*del_curve, strict=False)]
+        # ins_curve = list(map(lambda x: [y.item() for y in x], zip(*ins_curve)))
+        ins_curve = [[y.item() for y in x] for x in zip(*ins_curve, strict=False)]
 
     return del_scores, ins_scores, del_curve, ins_curve, index
 
 
 def score_output(
-    args, image, image_size, model, model_name, l, label, prompt, positions
+    args, image, image_size, model, label, prompt, positions
 ):
     input_ids = torch.cat((prompt, label), dim=1)
     probs_pred = pred_probs(args, model, input_ids, label, image, image_size).unsqueeze(

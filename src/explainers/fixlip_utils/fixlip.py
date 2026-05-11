@@ -1,8 +1,8 @@
 import time
 
-import shapiq
 import numpy as np
 import scipy as sp
+import shapiq
 
 from . import sampler
 

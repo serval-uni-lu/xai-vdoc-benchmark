@@ -43,7 +43,7 @@ def load_vlm(
     # 2. Prepare Loading Arguments
     load_kwargs = {
         "device_map": f"cuda:{gpu_node}",
-        #"device_map": "auto",
+        # "device_map": "auto",
         "trust_remote_code": trust_remote,
         "dtype": torch.bfloat16,
         "quantization_config": bnb_config,
@@ -52,33 +52,27 @@ def load_vlm(
 
     # 3. Load Processor
     try:
-        processor = AutoProcessor.from_pretrained(
-            model_id, trust_remote_code=trust_remote
-        )
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=trust_remote)
         if vlm_type == VLMType.INTERNVL:
             # Reduce the number of tiles to avoid VRAM and GPU overcomsumption
             processor.image_processor.max_patches = 2
 
     except Exception as e:
-        raise ValueError(f"Failed to load processor for {model_id}: {e}")
+        raise ValueError(f"Failed to load processor for {model_id}: {e}") from e
 
     # 4. Load Model
     try:
         if vlm_type in [VLMType.QWEN2_5_VL, "qwenvl"]:
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_id, **load_kwargs
-            )
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
         elif vlm_type == VLMType.INTERNVL:
             model = AutoModelForImageTextToText.from_pretrained(model_id, **load_kwargs)
         elif vlm_type == VLMType.LLAVA:
-            model = LlavaForConditionalGeneration.from_pretrained(
-                model_id, **load_kwargs
-            )
+            model = LlavaForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
         else:
             print(f"[!] Warning: Falling back to AutoModelForCausalLM for {vlm_type}")
             model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
     except Exception as e:
-        raise ValueError(f"Failed to load model for {model_id}: {e}")
+        raise ValueError(f"Failed to load model for {model_id}: {e}") from e
 
     model.eval()
 
@@ -99,7 +93,4 @@ def load_vlm(
         return LlavaWrapper(model, processor)
 
     else:
-        raise NotImplementedError(
-            f"Wrapper for {vlm_type} is defined but not instantiated in factory."
-        )
-
+        raise NotImplementedError(f"Wrapper for {vlm_type} is defined but not instantiated in factory.")

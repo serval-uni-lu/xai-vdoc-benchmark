@@ -6,14 +6,13 @@ import torch
 from shapiq import Game
 from torch import Tensor
 
+from src.models import BaseVLMWrapper
 from src.utils.faithfulness_utils import (
-    _reshape_pixels_back_faithfulness,
     _reshape_pixels_faithfulness,
-    make_blur_baseline,
     get_most_important_tokens_multimodal,
+    make_blur_baseline,
     score_output,
 )
-from src.models import BaseVLMWrapper
 
 
 class MacroSynergyGame(Game):
@@ -39,7 +38,7 @@ class MacroSynergyGame(Game):
         num_img_feat,
         ndim: int,
         origin_shape,
-        batch_size: int=32,
+        batch_size: int = 32,
     ):
 
         # Player 0: Top-K Image, Player 1: Top-K Text, Players 2..N: Background
@@ -75,7 +74,7 @@ class MacroSynergyGame(Game):
         self.origin_shape = origin_shape
         self.batch_size = batch_size
 
-        self.model_type =  getattr(model.model.config, "model_type", "").lower()
+        self.model_type = getattr(model.model.config, "model_type", "").lower()
 
     def value_function_crossmodal(self, coalitions: np.ndarray) -> np.ndarray:
         n_coalitions = coalitions.shape[0]
@@ -87,9 +86,7 @@ class MacroSynergyGame(Game):
             batch_coalitions = coalitions[start_idx:end_idx]
 
             batch_feats = self.feat_baseline.expand(current_batch_size, -1, -1).clone()
-            batch_input_ids = self.baseline_input_ids.expand(
-                current_batch_size, -1
-            ).clone()
+            batch_input_ids = self.baseline_input_ids.expand(current_batch_size, -1).clone()
 
             for i in range(current_batch_size):
                 coalition = batch_coalitions[i]
@@ -106,36 +103,25 @@ class MacroSynergyGame(Game):
 
                 if len(active_img_idx_list) > 0:
                     active_img_idx = torch.cat(active_img_idx_list).unsqueeze(0)
-                    active_img_idx_exp = active_img_idx.unsqueeze(1).expand(
-                        1, self.num_img_feat, -1
-                    )
+                    active_img_idx_exp = active_img_idx.unsqueeze(1).expand(1, self.num_img_feat, -1)
                     pixels_orig = self.feat.gather(dim=2, index=active_img_idx_exp)
-                    batch_feats[i : i + 1].scatter_(
-                        dim=2, index=active_img_idx_exp, src=pixels_orig
-                    )
+                    batch_feats[i : i + 1].scatter_(dim=2, index=active_img_idx_exp, src=pixels_orig)
 
                 # --- B. Text Scatter (Player 1 + Text BG Players) ---
                 active_txt_idx_list = []
                 if coalition[1] and self.top_token_idx.numel() > 0:
-                    active_txt_idx_list.append(
-                        self.top_token_idx.squeeze(0)
-                    )  # Player 1
+                    active_txt_idx_list.append(self.top_token_idx.squeeze(0))  # Player 1
 
                 # Text BG Players start AFTER the Image BG players
                 text_bg_start_idx = 2 + self.n_bg_img
                 for j in range(self.n_bg_txt):
-                    if (
-                        coalition[text_bg_start_idx + j]
-                        and len(self.bg_txt_groups[j]) > 0
-                    ):
+                    if coalition[text_bg_start_idx + j] and len(self.bg_txt_groups[j]) > 0:
                         active_txt_idx_list.append(self.bg_txt_groups[j])
 
                 if len(active_txt_idx_list) > 0:
                     active_txt_idx = torch.cat(active_txt_idx_list).unsqueeze(0)
                     tokens_orig = self.input_ids.gather(dim=1, index=active_txt_idx)
-                    batch_input_ids[i : i + 1].scatter_(
-                        dim=1, index=active_txt_idx, src=tokens_orig
-                    )
+                    batch_input_ids[i : i + 1].scatter_(dim=1, index=active_txt_idx, src=tokens_orig)
 
             # --- C. Reshape and Qwen2-VL Fix ---
             if self.ndim == 4:
@@ -149,30 +135,24 @@ class MacroSynergyGame(Game):
                 # 1. Safely transpose the axes back
                 batch_pixels = batch_feats.transpose(1, 2)
                 # 2. Flatten for Qwen2-VL
-                batch_pixels = batch_pixels.reshape(
-                    current_batch_size * num_pixels, patch_dim
-                )
+                batch_pixels = batch_pixels.reshape(current_batch_size * num_pixels, patch_dim)
 
                 # 3. Duplicate the image_grid_thw
-                batch_inputs = {k: v for k, v in self.inputs.items()}
+                # batch_inputs = {k: v for k, v in self.inputs.items()}
+                batch_inputs = dict(self.inputs.items())
                 if "image_grid_thw" in batch_inputs:
                     grid = batch_inputs["image_grid_thw"]
                     if grid.ndim == 1:
-                        batch_inputs["image_grid_thw"] = grid.unsqueeze(0).repeat(
-                            current_batch_size, 1
-                        )
+                        batch_inputs["image_grid_thw"] = grid.unsqueeze(0).repeat(current_batch_size, 1)
                     else:
-                        batch_inputs["image_grid_thw"] = grid.repeat(
-                            current_batch_size, 1
-                        )
+                        batch_inputs["image_grid_thw"] = grid.repeat(current_batch_size, 1)
             else:
                 raise ValueError(
-                    "The dimension of pixel values is not supported ! Must be (B, C, H, W) or (B, num_patches, patch_dim)"
+                    "The dimension of pixel values is not supported ! \
+                        Must be (B, C, H, W) or (B, num_patches, patch_dim)"
                 )
 
-            batch_target_positions = [
-                self.target_positions[0] for _ in range(current_batch_size)
-            ]
+            batch_target_positions = [self.target_positions[0] for _ in range(current_batch_size)]
             batch_target_ids = self.target_ids.expand(current_batch_size, -1)
 
             probs = score_output(
@@ -204,9 +184,7 @@ class MacroSynergyGame(Game):
 
             # 1. Pre-allocate batched baselines
             batch_feats = self.feat_baseline.expand(current_batch_size, -1, -1).clone()
-            batch_input_ids = self.baseline_input_ids.expand(
-                current_batch_size, -1
-            ).clone()
+            batch_input_ids = self.baseline_input_ids.expand(current_batch_size, -1).clone()
 
             # 2. Build the inputs using your exact scatter_ logic
             for i in range(current_batch_size):
@@ -222,20 +200,14 @@ class MacroSynergyGame(Game):
 
                 if len(active_img_idx_list) > 0:
                     active_img_idx = torch.cat(active_img_idx_list).unsqueeze(0)
-                    active_img_idx_exp = active_img_idx.unsqueeze(1).expand(
-                        1, self.num_img_feat, -1
-                    )
+                    active_img_idx_exp = active_img_idx.unsqueeze(1).expand(1, self.num_img_feat, -1)
                     pixels_orig = self.feat.gather(dim=2, index=active_img_idx_exp)
-                    batch_feats[i : i + 1].scatter_(
-                        dim=2, index=active_img_idx_exp, src=pixels_orig
-                    )
+                    batch_feats[i : i + 1].scatter_(dim=2, index=active_img_idx_exp, src=pixels_orig)
 
                 # --- B. Text Scatter ---
                 active_txt_idx_list = []
                 if coalition[1] and self.top_token_idx.numel() > 0:
-                    active_txt_idx_list.append(
-                        self.top_token_idx.squeeze(0)
-                    )  # Player 1
+                    active_txt_idx_list.append(self.top_token_idx.squeeze(0))  # Player 1
                 for j in range(self.n_background):
                     if coalition[2 + j] and len(self.bg_txt_groups[j]) > 0:
                         active_txt_idx_list.append(self.bg_txt_groups[j])
@@ -243,11 +215,10 @@ class MacroSynergyGame(Game):
                 if len(active_txt_idx_list) > 0:
                     active_txt_idx = torch.cat(active_txt_idx_list).unsqueeze(0)
                     tokens_orig = self.input_ids.gather(dim=1, index=active_txt_idx)
-                    batch_input_ids[i : i + 1].scatter_(
-                        dim=1, index=active_txt_idx, src=tokens_orig
-                    )
+                    batch_input_ids[i : i + 1].scatter_(dim=1, index=active_txt_idx, src=tokens_orig)
             # Create a shallow copy of inputs so we safely alter grid metadata per-batch
-            batch_inputs = {k: v for k, v in self.inputs.items()}
+            # batch_inputs = {k: v for k, v in self.inputs.items()}
+            batch_inputs = dict(self.inputs.items())
 
             # Use model_type for routing
             model_type = getattr(self, "model_type", "").lower()
@@ -261,9 +232,7 @@ class MacroSynergyGame(Game):
 
             elif "qwen" in model_type:
                 _, num_pixels, patch_dim = self.origin_shape
-                batch_pixels = batch_feats.reshape(
-                    current_batch_size, num_pixels, patch_dim
-                )
+                batch_pixels = batch_feats.reshape(current_batch_size, num_pixels, patch_dim)
 
                 # 2. Create a copy of the inputs dict so we don't permanently alter the original
                 # batch_inputs = {k: v for k, v in self.inputs.items()}
@@ -274,7 +243,7 @@ class MacroSynergyGame(Game):
                     # If grid is (1, 3), repeat it to (5, 3)
                     batch_inputs["image_grid_thw"] = grid.repeat(current_batch_size, 1)
                 # --- QWEN2-VL SPECIFIC FIX END ---
-            
+
             elif "internvl" in model_type:
                 # InternVL expects 5D: (B, num_tiles, C, H, W)
                 _, num_tiles, C, H, W = self.origin_shape
@@ -282,12 +251,11 @@ class MacroSynergyGame(Game):
 
             else:
                 raise ValueError(
-                    "The dimension of pixel values is not supported ! Must be (B, C, H, W) or (B, num_patches, patch_dim)"
+                    "The dimension of pixel values is not supported ! \
+                        Must be (B, C, H, W) or (B, num_patches, patch_dim)"
                 )
 
-            batch_target_positions = [
-                self.target_positions[0] for _ in range(current_batch_size)
-            ]
+            batch_target_positions = [self.target_positions[0] for _ in range(current_batch_size)]
             batch_target_ids = self.target_ids.expand(current_batch_size, -1)
 
             # 4. Score Output
@@ -318,10 +286,10 @@ def eval_sii_auc_with_class(
     filter_keywords: bool = True,
     blur_baseline: Tensor | None = None,
     semantic_mask: Tensor | None = None,
-    mask_value: float=0.0,
-    n_background_groups: int=10,
-    shapiq_budget: int=300,
-    batch_size: int =32,
+    mask_value: float = 0.0,
+    n_background_groups: int = 10,
+    shapiq_budget: int = 300,
+    batch_size: int = 32,
 ):
     device = model.device
     pixel_values = inputs["pixel_values"].to(device)
@@ -357,15 +325,12 @@ def eval_sii_auc_with_class(
         pixel_values=pixel_values, origin_shape=origin_shape, model_type=model_type
     )
 
-
     num_img_feat = feat.shape[1]
 
     # Baseline image (blur)
     if blur_baseline is None:
         # blur_baseline = torch.full_like(pixel_values, mask_value).to(device)
-        blur_baseline = make_blur_baseline(
-            pixel_values=pixel_values, model_type=model_type
-        )
+        blur_baseline = make_blur_baseline(pixel_values=pixel_values, model_type=model_type)
     feat_baseline = blur_baseline.clone().reshape(feat.shape)
     # sal_flat_img = pixel_attribution.reshape(1, -1)
 
@@ -377,7 +342,7 @@ def eval_sii_auc_with_class(
         sal_flat_img = pixel_attribution
     else:
         raise ValueError("pixel_attribution must be 2D, 3D, or 4D.")
-    
+
     # --- 2. Setup Text Inputs ---
     # Start by only allowing perturbation where semantic_mask is True
     if semantic_mask is not None:
@@ -443,15 +408,11 @@ def eval_sii_auc_with_class(
         # Background chunking
         is_bg_img = torch.ones((1, num_pixels), dtype=torch.bool, device=device)
         is_bg_img.scatter_(1, top_img_idx, False)
-        bg_img_indices = is_bg_img.nonzero(as_tuple=True)[1][
-            torch.randperm(num_pixels - k_img)
-        ]
+        bg_img_indices = is_bg_img.nonzero(as_tuple=True)[1][torch.randperm(num_pixels - k_img)]
 
         is_bg_txt = valid_mask.clone()
         is_bg_txt.scatter_(1, top_token_idx, False)
-        bg_txt_indices = is_bg_txt.nonzero(as_tuple=True)[1][
-            torch.randperm(num_valid_tokens - k_txt)
-        ]
+        bg_txt_indices = is_bg_txt.nonzero(as_tuple=True)[1][torch.randperm(num_valid_tokens - k_txt)]
 
         bg_img_groups = torch.tensor_split(bg_img_indices, n_background_groups)
         bg_txt_groups = torch.tensor_split(bg_txt_indices, n_background_groups)
@@ -476,9 +437,7 @@ def eval_sii_auc_with_class(
             batch_size=batch_size,
         )
 
-        approximator = shapiq.approximator.SHAPIQ(
-            n=game.n_players, max_order=2, index="SII"
-        )
+        approximator = shapiq.approximator.SHAPIQ(n=game.n_players, max_order=2, index="SII")
         interaction_values = approximator.approximate(budget=shapiq_budget, game=game)
 
         sii_curve.append(interaction_values[(0, 1)])

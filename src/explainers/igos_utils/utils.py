@@ -152,12 +152,12 @@ def save_heatmaps(
     images = images.cpu().detach().permute((0, 2, 3, 1)) * std + mean
     images = images.numpy()
 
-    for i, (image, u_mask) in enumerate(zip(images, u_mask)):
+    for i, (image, u_msk) in enumerate(zip(images, u_mask, strict=False)):
         # get the color map and normalize to 0-1
-        heatmap = cv2.applyColorMap(np.uint8(255 * u_mask), cv2.COLORMAP_JET)
+        heatmap = cv2.applyColorMap(np.uint8(255 * u_msk), cv2.COLORMAP_JET)
         heatmap = np.float32(heatmap / 255)
         # overlay the mask over the image
-        # overlay = (u_mask ** 0.8) *0.5* image + (1 - u_mask ** 0.8) * heatmap
+        # overlay = (u_msk ** 0.8) *0.5* image + (1 - u_msk ** 0.8) * heatmap
         overlay = 0.5 * heatmap + 0.5 * image
         cv2.normalize(overlay.astype("float"), None, 0.0, 1.0, cv2.NORM_MINMAX)
         overlay[overlay < 0] = 0
@@ -178,7 +178,7 @@ def save_masks(masks, index, categories, mask_name, outdir):
     :return:
     """
     masks = masks.cpu().detach().numpy()
-    for i, (mask, category) in enumerate(zip(masks, categories), start=index):
+    for i, (mask, category) in enumerate(zip(masks, categories, strict=False), start=index):
         np.save(os.path.join(outdir, f"{mask_name}_{i + 1}_mask_{category}.npy"), mask)
 
 
@@ -353,7 +353,7 @@ def get_initial(pred_data, k, init_posi, init_val, input_size, out_size):
         init_mask = torch.zeros((input_size[0], input_size[1])).unsqueeze(0)
         init_mask[int(box[0]) : int(box[2]), int(box[1]) : int(box[3])] = 1
 
-        if "masks" in pred_data.keys():
+        if "masks" in pred_data:
             init_mask = init_mask * pred_data["masks"][ith]
 
         init_mask = down(init_mask.unsqueeze(0)) * init_val
@@ -366,7 +366,7 @@ def generate(args, model, input_ids, image, image_size):
         input_ids,
         images=image,
         # image_sizes=image_size,
-        do_sample=True if args.temperature > 0 else False,
+        do_sample=(args.temperature > 0),
         temperature=args.temperature,
         top_p=args.top_p,
         num_beams=args.num_beams,

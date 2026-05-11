@@ -1,26 +1,20 @@
 import argparse
+import json
 import os
 import time
 import traceback
-import json
 
 import torch
-import yaml
 from tqdm import tqdm
 
 # --- ABSTRACTED FACTORIES & UTILS ---
-from src.datasets.factory import get_dataloader # Ensure this returns your POPEOracleDataset!
-from src.utils.xai_utils import find_ynvqa_token_index, save_to_jsonl
-from src.metrics import FaithfulnessMetric
-from src.models.factory import load_vlm
+from src.datasets.factory import get_dataloader  # Ensure this returns your POPEOracleDataset!
 
 # Import our custom mathematical bounds
-from src.explainers import OracleExplainer, AntiExplainer, RandomExplainer
-
-
-def load_yaml(file_path):
-    with open(file_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+from src.explainers import AntiExplainer, OracleExplainer, RandomExplainer
+from src.metrics import FaithfulnessMetric
+from src.models.factory import load_vlm
+from src.utils.xai_utils import find_ynvqa_token_index, load_yaml, save_to_jsonl
 
 
 def run_experiment_1_1(args):
@@ -29,22 +23,20 @@ def run_experiment_1_1(args):
     model_config = load_yaml(args.model_config)
 
     # Setup Output Directory specifically for the Bounds test
-    output_dir = os.path.join(
-        args.output_dir, model_config["name"], f"{dataset_config['name']}_bounds"
-    )
+    output_dir = os.path.join(args.output_dir, model_config["name"], f"{dataset_config['name']}_bounds")
     os.makedirs(output_dir, exist_ok=True)
 
-    # 2. Load Model 
+    # 2. Load Model
     print(f"[*] Loading Model: {model_config['name']}...")
     model_wrapper = load_vlm(
         model_config=model_config,
-        attn_implementation=None, # Oracle/Random don't need eager attention
+        attn_implementation=None,  # Oracle/Random don't need eager attention
         gpu_node=args.gpu_id,
         output_attentions=False,
     )
 
     # 3. Load the ORACLE Dataset
-    # IMPORTANT: Your dataset_config must point to the POPEOracleDataset 
+    # IMPORTANT: Your dataset_config must point to the POPEOracleDataset
     # which filters for "yes" labels and returns 'object_name' and 'pixel_oracle_mask'.
     dl = get_dataloader(dataset_config)
 
@@ -65,12 +57,13 @@ def run_experiment_1_1(args):
     explainers_to_test = {
         "Oracle": OracleExplainer(model_wrapper),
         "Random": RandomExplainer(model_wrapper),
-        "Anti-Explainer": AntiExplainer(model_wrapper)
+        "Anti-Explainer": AntiExplainer(model_wrapper),
     }
 
     # ---------------------------------------------------------
     # OUTER LOOP: Iterate over the Bounds
     # ---------------------------------------------------------
+    explainer = None
     for explainer_name, explainer in explainers_to_test.items():
         try:
             print(f"\n{'=' * 50}\n[*] Evaluating Bound: {explainer_name} \n{'=' * 50}")
@@ -81,8 +74,8 @@ def run_experiment_1_1(args):
             # --- RESUME LOGIC ---
             processed_indices = set()
             if os.path.exists(output_file):
-                print(f"[*] Found existing results. Scanning for completed samples...")
-                with open(output_file, 'r', encoding='utf-8') as f:
+                print("[*] Found existing results. Scanning for completed samples...")
+                with open(output_file, encoding="utf-8") as f:
                     for line in f:
                         if line.strip():
                             try:
@@ -101,15 +94,15 @@ def run_experiment_1_1(args):
                     break
 
                 if idx in processed_indices:
-                    continue 
+                    continue
 
                 img = sample["image"]
                 question = sample["question"]
                 image_id = sample.get("image_id", f"unknown_{idx}")
-                
+
                 # Oracle Required Fields
                 keyword = sample.get("object_name")
-                oracle_mask_2d = sample.get("pixel_oracle_mask") # or "ground_truth_mask" based on your dataset keys
+                oracle_mask_2d = sample.get("pixel_oracle_mask")  # or "ground_truth_mask" based on your dataset keys
 
                 try:
                     # 1. Forward Pass
@@ -123,7 +116,7 @@ def run_experiment_1_1(args):
                         tokenizer=tok,
                     )
                     if yes_no_tok_idx is None:
-                        yes_no_tok_idx = 0 
+                        yes_no_tok_idx = 0
 
                     # 3. Generate Attributions (Pass Oracle Kwargs!)
                     start_time = time.perf_counter()
@@ -132,8 +125,8 @@ def run_experiment_1_1(args):
                         text=question,
                         target_indices=yes_no_tok_idx,
                         pred_results=pred_results,
-                        keyword=keyword,               # INJECTED FOR ORACLE
-                        oracle_mask_2d=oracle_mask_2d  # INJECTED FOR ORACLE
+                        keyword=keyword,  # INJECTED FOR ORACLE
+                        oracle_mask_2d=oracle_mask_2d,  # INJECTED FOR ORACLE
                     )
                     xai_gen_time = time.perf_counter() - start_time
 
@@ -143,16 +136,14 @@ def run_experiment_1_1(args):
                     xai_result = {
                         "inputs": inputs,
                         "target_ids": pred_results["new_ids"].unsqueeze(0),
-                        "pixel_attribution": img_attrs[0:1], 
+                        "pixel_attribution": img_attrs[0:1],
                         "token_attribution": text_attrs[0:1],
                     }
 
                     faith_sample = {"image": img, "text": question}
 
                     # 5. Compute Metrics
-                    faith_scores = faith_metrics.compute(
-                        model_wrapper, faith_sample, xai_result
-                    )
+                    faith_scores = faith_metrics.compute(model_wrapper, faith_sample, xai_result)
 
                     # 6. Logging
                     log_dict = {
@@ -183,13 +174,16 @@ def run_experiment_1_1(args):
             print(f"[!] Details: {e}")
             continue
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Experiment 1.1: Axiomatic Bounds")
 
     parser.add_argument("--model_config", type=str, required=True, help="Path to model YAML")
-    parser.add_argument("--dataset_config", type=str, required=True, help="Path to dataset YAML (Must be Oracle dataset)")
+    parser.add_argument(
+        "--dataset_config", type=str, required=True, help="Path to dataset YAML (Must be Oracle dataset)"
+    )
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU node to use")
-    
+
     # We highly recommend capping this at 500 for the bounds test
     parser.add_argument("--max_samples", type=int, default=200, help="Max samples to evaluate")
     parser.add_argument("--output_dir", type=str, default="logs/experiment_1", help="Where to save logs")

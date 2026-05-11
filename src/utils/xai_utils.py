@@ -1,15 +1,13 @@
-import os
 import json
 import math
-import string
+import os
 import re
-from typing import Optional
+import string
 
-import yaml
 import torch
-from torch import Tensor
 import torch.nn.functional as F
-
+import yaml
+from torch import Tensor
 
 
 def align_llm_visuals_to_pixels(
@@ -38,7 +36,7 @@ def align_llm_visuals_to_pixels(
         return pixel_attribution
 
     gen_len, num_llm_tokens = pixel_attribution.shape
-    ndim = pixel_values.ndim
+    # ndim = pixel_values.ndim
     model_type = config.model_type
 
     # ---------------------------------------------------------
@@ -54,9 +52,7 @@ def align_llm_visuals_to_pixels(
 
         # 1. Reshape to allow 2D spatial interpolation across all tiles simultaneously
         # Shape: [gen_len * num_tiles, 1, 16, 16]
-        pixel_attr_2d = pixel_attribution.view(
-            gen_len * num_tiles, 1, llm_grid_h, llm_grid_w
-        )
+        pixel_attr_2d = pixel_attribution.view(gen_len * num_tiles, 1, llm_grid_h, llm_grid_w)
 
         # 2. Upscale from 16x16 to target size (usually 448x448)
         pixel_attr_upscaled = F.interpolate(
@@ -116,14 +112,10 @@ def align_llm_visuals_to_pixels(
         return pixel_attr_upscaled.view(gen_len, -1)
 
     else:
-        raise ValueError(
-            "Could not infer spatial grid from inputs. Unknown architecture."
-        )
+        raise ValueError("Could not infer spatial grid from inputs. Unknown architecture.")
 
 
-def align_attribution_to_patches(
-    high_res_attr: torch.Tensor, image_grid_thw: torch.Tensor
-) -> torch.Tensor:
+def align_attribution_to_patches(high_res_attr: torch.Tensor, image_grid_thw: torch.Tensor) -> torch.Tensor:
     """
     Downsamples a pixel-level attribution map to match the VLM's patch sequence.
 
@@ -163,9 +155,7 @@ def align_attribution_to_patches(
     return patch_attr_flat
 
 
-def create_semantic_mask_robust_(
-    input_ids: Tensor, processor, prefix_text: str, core_question: str
-) -> Tensor:
+def create_semantic_mask_robust_(input_ids: Tensor, processor, prefix_text: str, core_question: str) -> Tensor:
     """
     Finds the exact tokens corresponding to the core question using cumulative decoding.
     This safely ignores BPE space-merging and special inserted tokens.
@@ -194,11 +184,8 @@ def create_semantic_mask_robust_(
         # --- 1. Find where the Question Starts ---
         if start_idx is None and prefix_clean in decoded_so_far:
             # Check if the current token ended EXACTLY at the prefix.
-            if decoded_so_far.endswith(prefix_clean):
-                start_idx = i  # The NEXT token (index i) starts the question
-            else:
-                # The current token bridged the gap (e.g. it contains "no: Is")
-                start_idx = i - 1
+            start_idx = i if decoded_so_far.endswith(prefix_clean) else i - 1
+            # The NEXT token (index i) starts the question
 
         # --- 2. Find where the Question Ends ---
         if start_idx is not None and target_clean in decoded_so_far:
@@ -214,9 +201,7 @@ def create_semantic_mask_robust_(
     return mask
 
 
-def create_semantic_mask_robust(
-    input_ids: torch.Tensor, processor, core_question: str
-) -> torch.Tensor:
+def create_semantic_mask_robust(input_ids: torch.Tensor, processor, core_question: str) -> torch.Tensor:
     """
     Finds the exact tokens corresponding to the core question by searching for the
     tightest token window that decodes to contain the question.
@@ -261,19 +246,16 @@ def create_semantic_mask_robust(
     return mask
 
 
-def get_processed_indices(output_file: str,
-                          total_dataset_len: int,
-                          max_samples: Optional[int] = None
-                          ) -> set:
+def get_processed_indices(output_file: str, total_dataset_len: int, max_samples: int | None = None) -> set:
     """
     Scans the output JSONL file to find indices of already processed samples.
     Returns a set of completed sample indices for resume logic.
     """
     processed_indices = set()
-    
+
     if os.path.exists(output_file):
-        print(f"[*] Found existing results file. Scanning for completed samples...")
-        with open(output_file, 'r', encoding='utf-8') as f:
+        print("[*] Found existing results file. Scanning for completed samples...")
+        with open(output_file, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     try:
@@ -282,29 +264,29 @@ def get_processed_indices(output_file: str,
                             processed_indices.add(data["sample_idx"])
                     except json.JSONDecodeError:
                         pass
-        
+
         # Calculate the target denominator for the print statement
         total_samples = total_dataset_len
         if max_samples is not None:
             total_samples = min(total_samples, max_samples)
-            
+
         print(f"[*] Skipping {len(processed_indices)} / {total_samples} already processed samples.")
-        
+
     return processed_indices
+
 
 def save_to_jsonl(data: dict, filepath: str):
     """Appends a dictionary as a JSON line to a file."""
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(data) + "\n")
 
+
 def load_yaml(file_path):
     with open(file_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def find_ynvqa_token_index(new_ids,
-                           text_answer,
-                           tokenizer) -> int | None:
+def find_ynvqa_token_index(new_ids, text_answer, tokenizer) -> int | None:
     """
     Finds the exact index of the 'yes' or 'no' token in the generated sequence.
     """
@@ -331,78 +313,84 @@ def find_ynvqa_token_index(new_ids,
     return None  # Fallback
 
 
-def find_mcvqa_token_index(new_ids,
-                           tokenizer,
-                           choices=['a', 'b', 'c', 'd']):
+def find_mcvqa_token_index(new_ids, tokenizer, choices=None):
     """
-    Scans tokenized output and scores candidates. 
+    Scans tokenized output and scores candidates.
     Includes Math penalties, Special Token boundaries for LLaVA/Qwen, and Empty-Token detection.
     """
+    if choices is None:
+        choices = ["a", "b", "c", "d"]
+
     if hasattr(new_ids, "dim") and new_ids.dim() > 1:
         new_ids = new_ids[0].tolist()
-        
+
     tokens = tokenizer.convert_ids_to_tokens(new_ids)
     lower_choices = [str(c).lower() for c in choices]
-    
+
     candidates = []
 
     for idx, token in enumerate(tokens):
         # re.sub automatically strips out '▁', 'Ġ', and ' ' to reveal the pure alphanumeric letter
         clean_token = token.lower()
-        raw_chars = re.sub(r'[^a-z0-9]', '', clean_token)
-        
+        raw_chars = re.sub(r"[^a-z0-9]", "", clean_token)
+
         if len(raw_chars) == 1 and raw_chars in lower_choices:
             score = 0
-            
+
             # 1. Self-Context
-            if any(p in token for p in ['(', ')', '.', ':']):
+            if any(p in token for p in ["(", ")", ".", ":"]):
                 score += 2
-                
+
             # 2. Previous Context
             if idx > 0:
-                prev_token = tokens[idx-1].lower()
+                prev_token = tokens[idx - 1].lower()
                 # Clean the previous token to see if it's literally just empty space or special chars
-                prev_clean = re.sub(r'[^a-z0-9]', '', prev_token)
-                
+                prev_clean = re.sub(r"[^a-z0-9]", "", prev_token)
+
                 # BOOST: If previous token is just spaces OR a structural/special start token
-                if not prev_clean or any(w in prev_token for w in ['answer', 'is', 'option', ':', '(', '\n', '<s>', '<bos>', '<pad>', '<|im_start|>']):
+                if not prev_clean or any(
+                    w in prev_token
+                    for w in ["answer", "is", "option", ":", "(", "\n", "<s>", "<bos>", "<pad>", "<|im_start|>"]
+                ):
                     score += 3
-                    
+
                 # MATH PENALTY
-                if any(m in prev_token for m in ['+', '-', '=', '^', '*', '/', '\\', '{', '}']):
+                if any(m in prev_token for m in ["+", "-", "=", "^", "*", "/", "\\", "{", "}"]):
                     score -= 10
             else:
-                score += 5 # First token boost
+                score += 5  # First token boost
 
             # 3. Next Context
             if idx < len(tokens) - 1:
-                next_token = tokens[idx+1].lower()
-                next_clean = re.sub(r'[^a-z0-9]', '', next_token)
-                
+                next_token = tokens[idx + 1].lower()
+                next_clean = re.sub(r"[^a-z0-9]", "", next_token)
+
                 # BOOST: If next token is just spaces OR a structural/special end token
-                if not next_clean or any(w in next_token for w in [')', '.', '\n', ':', '</s>', '<eos>', '<pad>', '<|im_end|>']):
+                if not next_clean or any(
+                    w in next_token for w in [")", ".", "\n", ":", "</s>", "<eos>", "<pad>", "<|im_end|>"]
+                ):
                     score += 3
-                    
+
                 # MATH PENALTY
-                if any(m in next_token for m in ['+', '-', '=', '^', '*', '/', '\\', '{', '}']):
+                if any(m in next_token for m in ["+", "-", "=", "^", "*", "/", "\\", "{", "}"]):
                     score -= 10
             else:
-                score += 3 # Last token boost
-                
+                score += 3  # Last token boost
+
             # 4. Penalty for normal words hidden in a sentence
             if score <= 0:
                 score -= 5
-                
+
             candidates.append((score, idx, token))
 
     # Evaluate the candidates
     if candidates:
         candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
         best_score, best_idx, best_token = candidates[0]
-        
+
         # ACCEPT IF: It survived the penalties OR it's the ONLY valid letter the model generated!
         if best_score > -1 or len(candidates) == 1:
             return best_idx, best_token
-            
+
     # Fallback
     return -1, tokens[0] if tokens else ""

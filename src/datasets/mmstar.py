@@ -1,7 +1,7 @@
-import pandas as pd
-import torch
 from torch.utils.data import Dataset
+
 from datasets import load_dataset
+
 
 class MMStarDataset(Dataset):
     def __init__(self, hf_path="Lin-Chen/MMStar", split="val"):

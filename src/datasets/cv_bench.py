@@ -1,5 +1,7 @@
 from torch.utils.data import Dataset
+
 from datasets import load_dataset
+
 
 class CVBenchDataset(Dataset):
     def __init__(self, hf_path="nyu-visionx/CV-Bench", split="test"):

@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from src.explainers import BaseExplainer
-from src.utils.xai_utils import align_llm_visuals_to_pixels
 from src.models import BaseVLMWrapper
+from src.utils.xai_utils import align_llm_visuals_to_pixels
 
 
 def stitch_chunks_to_matrix(chunk_list):
@@ -61,16 +61,12 @@ class RolloutExplainer(BaseExplainer):
             layer_grads = [None] * len(chunk_list)
 
             def create_hook(idx, target_list):
-                return lambda grad: target_list.__setitem__(
-                    idx, grad.clone().detach().cpu()
-                )
+                return lambda grad: target_list.__setitem__(idx, grad.clone().detach().cpu())
 
             for i, chunk in enumerate(chunk_list):
                 if chunk is not None:
                     if not chunk.requires_grad:
-                        print(
-                            f"[!] WARNING: Attention chunk {i} does not require grad!"
-                        )
+                        print(f"[!] WARNING: Attention chunk {i} does not require grad!")
                     else:
                         chunk.retain_grad()
                         chunk.register_hook(create_hook(i, layer_grads))
@@ -93,14 +89,9 @@ class RolloutExplainer(BaseExplainer):
     def register_hooks(self):
         self.clear_hooks()
         for _, module in self.model.named_modules():
-            if (
-                self.wrapper.vision_module_name
-                and self.wrapper.vision_module_name in str(type(module))
-            ):
+            if self.wrapper.vision_module_name and self.wrapper.vision_module_name in str(type(module)):
                 self.hooks.append(module.register_forward_hook(self._vision_hook))
-            elif self.wrapper.llm_module_name and self.wrapper.llm_module_name in str(
-                type(module)
-            ):
+            elif self.wrapper.llm_module_name and self.wrapper.llm_module_name in str(type(module)):
                 self.hooks.append(module.register_forward_hook(self._llm_hook))
 
     def clear_hooks(self):
@@ -138,9 +129,7 @@ class RolloutExplainer(BaseExplainer):
     def _compute_rollout_math(self, attentions, gradients=None) -> torch.Tensor:
         """The core mathematical engine for Rollout with aggressive VRAM management."""
         if not attentions:
-            raise ValueError(
-                "Need attention weights to compute Attention (Grad)Rollout"
-            )
+            raise ValueError("Need attention weights to compute Attention (Grad)Rollout")
 
         math_device = getattr(self, "device", "cuda")
 
@@ -151,16 +140,14 @@ class RolloutExplainer(BaseExplainer):
         if gradients is not None and len(gradients) > 0:
             # GRADIENT ROLLOUT (Chefer et al. 2021)
 
-            for layer_attns, layer_grads in zip(attentions, gradients):
+            for layer_attns, layer_grads in zip(attentions, gradients, strict=False):
                 processed_chunks = []
 
                 # --- OOM FIX: DO THE MATH ON TINY CHUNKS BEFORE STITCHING ---
-                for a, g in zip(layer_attns, layer_grads):
+                for a, g in zip(layer_attns, layer_grads, strict=False):
                     # Move just this tiny chunk to GPU
                     a_gpu = a.to(math_device)
-                    g_gpu = (
-                        g.to(math_device) if g is not None else torch.zeros_like(a_gpu)
-                    )
+                    g_gpu = g.to(math_device) if g is not None else torch.zeros_like(a_gpu)
 
                     # Multiply and ReLU
                     grad_attn_chunk = a_gpu * g_gpu
@@ -255,16 +242,12 @@ class RolloutExplainer(BaseExplainer):
         with self.manage_explainability_state():
             if self.requires_grad:  # GradientxRollout
                 outputs = self.model(**inputs, output_attentions=True)
-                logits = outputs.logits[
-                    :, t_start - 1 : t_end - 1, :
-                ]  # (1, num_ans_tokens, vocab_size)
+                logits = outputs.logits[:, t_start - 1 : t_end - 1, :]  # (1, num_ans_tokens, vocab_size)
 
                 new_ids = full_ids[t_start:t_end]
                 new_ids = new_ids.unsqueeze(0).unsqueeze(-1)
 
-                target_logits = logits.gather(dim=-1, index=new_ids).squeeze(
-                    -1
-                )  # (1, num_ans_tokens)
+                target_logits = logits.gather(dim=-1, index=new_ids).squeeze(-1)  # (1, num_ans_tokens)
 
                 # --- TARGETED GRADIENT FIX ---
                 # Only compute gradients for the specific tokens we care about!
@@ -273,12 +256,8 @@ class RolloutExplainer(BaseExplainer):
                 self.model.zero_grad()
                 answer_score.backward(retain_graph=False)
 
-                v_rollout = self._compute_rollout_math(
-                    self.vision_attentions, self.vision_grads
-                )
-                t_rollout = self._compute_rollout_math(
-                    self.llm_attentions, self.llm_grads
-                )
+                v_rollout = self._compute_rollout_math(self.vision_attentions, self.vision_grads)
+                t_rollout = self._compute_rollout_math(self.llm_attentions, self.llm_grads)
                 v_rollout = v_rollout.detach().cpu()
                 t_rollout = t_rollout.detach().cpu()
             else:  # Standard Rollout
@@ -291,7 +270,7 @@ class RolloutExplainer(BaseExplainer):
         image_token_id = self.model.config.image_token_id
         is_image_mask = full_ids == image_token_id
         is_image_mask = is_image_mask.cpu()
-        is_text_mask = ~is_image_mask
+        # is_text_mask = ~is_image_mask
 
         prompt_mask = (
             torch.arange(
@@ -299,7 +278,7 @@ class RolloutExplainer(BaseExplainer):
             )
             < t_start
         )
-        final_text_mask = is_text_mask & prompt_mask
+        # final_text_mask = is_text_mask & prompt_mask
         final_image_mask = is_image_mask & prompt_mask
 
         # --- SUBSETTING FIX ---
@@ -326,9 +305,7 @@ class RolloutExplainer(BaseExplainer):
             )
 
         elif "qwen" in model_type:
-            text_to_vit_attn = align_llm_visuals_to_pixels(
-                text_to_image_attn, inputs, config=self.wrapper.model.config
-            )
+            text_to_vit_attn = align_llm_visuals_to_pixels(text_to_image_attn, inputs, config=self.wrapper.model.config)
             pixel_attribution = torch.matmul(text_to_vit_attn, v_rollout)
 
         elif "llava" in model_type:
@@ -336,21 +313,16 @@ class RolloutExplainer(BaseExplainer):
                 v_rollout = v_rollout[1:, 1:]
 
             patch_attribution = torch.matmul(text_to_image_attn, v_rollout)
-            pixel_attribution = align_llm_visuals_to_pixels(
-                patch_attribution, inputs, config=self.wrapper.model.config
-            )
+            pixel_attribution = align_llm_visuals_to_pixels(patch_attribution, inputs, config=self.wrapper.model.config)
 
         else:
-            raise NotImplementedError(
-                f"This model {model_type} is not yet implemented for Rollout !"
-            )
+            raise NotImplementedError(f"This model {model_type} is not yet implemented for Rollout !")
 
         if average:
             pixel_attribution = pixel_attribution.mean(dim=0)
 
         self.clear_hooks()
         return token_attribution, pixel_attribution
-
 
     def _fuse_and_upsample_internvl(self, text_to_image_attn, v_rollout, pixel_values):
         """
@@ -367,7 +339,7 @@ class RolloutExplainer(BaseExplainer):
                 v_rollout = v_rollout.squeeze(1)
             elif v_rollout.shape[0] == 1:
                 v_rollout = v_rollout.squeeze(0)
-                
+
         ndim = v_rollout.ndim
 
         # 1. Determine Tile Count & Strip the CLS token from ViT Rollout
@@ -376,16 +348,16 @@ class RolloutExplainer(BaseExplainer):
             num_tiles = v_rollout.shape[0]
             if v_rollout.shape[1] == 1025:
                 v_rollout = v_rollout[:, 1:, 1:]
-                
+
         elif ndim == 2:
             # 2D case: (1025, 1025) -> (1, 1024, 1024)
             num_tiles = 1
             if v_rollout.shape[0] == 1025:
                 v_rollout = v_rollout[1:, 1:]
-            
+
             # Add the batch/tile dimension so torch.bmm works gracefully below
-            v_rollout = v_rollout.unsqueeze(0) 
-            
+            v_rollout = v_rollout.unsqueeze(0)
+
         else:
             print(v_rollout.shape)
             print(text_to_image_attn.shape)
@@ -430,4 +402,3 @@ class RolloutExplainer(BaseExplainer):
         # 8. Format output to exactly what the perturbation metric expects
         # Shape: (gen_len, num_tiles, H, W)
         return pixel_attr_upscaled.view(gen_len, num_tiles, target_h, target_w)
-
