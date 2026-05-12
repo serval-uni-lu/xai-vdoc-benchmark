@@ -78,8 +78,8 @@ class POPEGroundingDataset(Dataset):
     def __len__(self):
         return len(self.pope_data[self.pope_type])
 
-    def __getitem__(self, idx):
-        item = self.pope_data[self.pope_type][idx]
+    def __getitem__(self, index):
+        item = self.pope_data[self.pope_type][index]
         img_filename = item["image"]  # e.g., '000000397133.jpg'
         question = item["text"]  # e.g., 'Is there a dog in the image?'
         label = item["label"]  # e.g., 'yes' or 'no'
@@ -208,8 +208,8 @@ class POPEOracleDataset(Dataset):
     def __len__(self):
         return len(self.pope_data[self.pope_type])
 
-    def __getitem__(self, idx):
-        item = self.pope_data[self.pope_type][idx]
+    def __getitem__(self, index):
+        item = self.pope_data[self.pope_type][index]
         img_filename = item["image"]
         question = item["text"]
 

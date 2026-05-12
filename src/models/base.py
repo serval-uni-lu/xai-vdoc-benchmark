@@ -5,14 +5,17 @@ from typing import Any, Literal
 import torch
 import torch.nn as nn
 from transformers import (
-    LlavaForConditionalGeneration,
     PreTrainedModel,
+    LlavaForConditionalGeneration,
+    AutoModelForImageTextToText,
     Qwen2_5_VLForConditionalGeneration,
+    InternVLForConditionalGeneration,
 )
 
 # Define a Union of all supported VLM classes
 # This tells VS Code "The model is strictly one of these
 # not just a generic Module"
+#SupportedVLM = LlavaForConditionalGeneration | Qwen2_5_VLForConditionalGeneration | InternVLForConditionalGeneration
 SupportedVLM = LlavaForConditionalGeneration | Qwen2_5_VLForConditionalGeneration | PreTrainedModel
 
 
@@ -25,6 +28,7 @@ class BaseVLMWrapper[ModelT: SupportedVLM](nn.Module, ABC):
         self.processor = processor
         self.model.eval()
         self.model_config = {}
+
 
     @property
     def device(self) -> torch.device:
@@ -208,6 +212,7 @@ class BaseVLMWrapper[ModelT: SupportedVLM](nn.Module, ABC):
         use_cache: bool = False,
         **kwargs,
     ) -> dict[str, Any]:
+        #assert hasattr(self.model, "generate"), "Model must support .generate()"
 
         # Generate
         with torch.no_grad():

@@ -822,7 +822,7 @@ def eval_multimodal_synergy_batch(
         k_img = max(0, min(k_img, num_pixels))  # Allow 0
 
         k_txt = int(round(step * num_valid_tokens))
-        k_txt = max(0, min(k_txt, num_valid_tokens))  # Allow 0
+        k_txt = int(max(0, min(k_txt, num_valid_tokens)))  # Allow 0
 
         # Identify Top Pixels
         # descending=True means "most important first"

@@ -358,7 +358,7 @@ def eval_sii_auc_with_class(
             valid_mask &= input_ids != skip_id
 
     # Count how many actual text tokens we have per batch
-    num_valid_tokens = valid_mask.sum(dim=1).min().item()
+    num_valid_tokens = int(valid_mask.sum(dim=1).min().item())
 
     # --- Mask Attribution Scores ---
     masked_attribution = token_attribution.clone()

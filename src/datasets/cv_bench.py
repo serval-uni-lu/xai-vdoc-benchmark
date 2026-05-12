@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
+from datasets import Dataset as HFDataset
 
 
 class CVBenchDataset(Dataset):
@@ -14,14 +15,17 @@ class CVBenchDataset(Dataset):
         self.hf_dataset = load_dataset(hf_path, split=split)
 
     def __len__(self):
-        return len(self.hf_dataset)
+        if isinstance(self.hf_dataset, (HFDataset, DatasetDict)):
+            return len(self.hf_dataset)
+        else:
+            raise TypeError("Dataset is streaming (IterableDataset) and has no length.")
 
-    def __getitem__(self, idx):
-        item = self.hf_dataset[idx]
+    def __getitem__(self, index):
+        item = self.hf_dataset[index]
         
 
         image = item['image'] #.convert("RGB")
-        index = item["idx"]
+        idx = item["idx"]
         question = item['prompt']
         label = item["answer"]
         category = item["task"]
@@ -30,7 +34,7 @@ class CVBenchDataset(Dataset):
             "image": image,
             "question": question,
             "label": label,
-            "index": index,
+            "index": idx,
             "category": category,
         }
 

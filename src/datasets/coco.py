@@ -36,8 +36,8 @@ class COCOGroundingDataset(Dataset):
     def __len__(self):
         return len(self.ids)
 
-    def __getitem__(self, idx):
-        img_id = self.ids[idx]
+    def __getitem__(self, index):
+        img_id = self.ids[index]
 
         # --- 1. Load Image ---
         img_info = self.coco_instances.loadImgs(img_id)[0]

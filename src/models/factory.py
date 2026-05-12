@@ -76,11 +76,28 @@ def load_vlm(
 
     model.eval()
 
+    # # 5. Handle Attention Flags (Specifically for Rollout on LLaVA)
+    # if output_attentions and vlm_type == VLMType.LLAVA:
+    #     model.config.vision_config.output_attentions = True
+    #     if hasattr(model.vision_tower, "config"):
+    #         model.vision_tower.config.output_attentions = True
+    #         model.vision_tower.vision_model.config.output_attentions = True
+
     # 5. Handle Attention Flags (Specifically for Rollout on LLaVA)
     if output_attentions and vlm_type == VLMType.LLAVA:
-        model.config.vision_config.output_attentions = True
-        model.vision_tower.config.output_attentions = True
-        model.vision_tower.vision_model.config.output_attentions = True
+        # We use getattr/setattr to avoid static type checking errors on dynamic HF attributes
+        model.config.output_attentions = True
+        
+        vision_tower = getattr(model, "vision_tower", None)
+        if vision_tower is not None:
+            # Set on the tower config
+            if hasattr(vision_tower, "config"):
+                vision_tower.config.output_attentions = True
+            
+            # Set on the inner vision_model config if it exists
+            v_model = getattr(vision_tower, "vision_model", None)
+            if v_model and hasattr(v_model, "config"):
+                v_model.config.output_attentions = True
 
     # 6. Dispatch to Correct Wrapper
     if vlm_type in [VLMType.QWEN2_5_VL, "qwenvl"]:
