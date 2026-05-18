@@ -4,8 +4,8 @@
 set -e 
 
 GPU_ID=${1:-0}
-EXPLAINERS=${2:-"tam"}
-MODEL_NAME=${3:-"internvl"}
+EXPLAINERS=${2:-"random gradcam tam llavacam inputxgradients integratedgradients rollout gradxrollout lxt"}
+MODEL_NAME=${3:-"qwenvl_7b"}
 DATASET_NAME=${4:-"mmstar"}
 
 
@@ -58,7 +58,7 @@ for MODEL in "${MODELS[@]}"; do
             --gpu_id $GPU_ID \
             --output_dir $OUTPUT_DIR \
             --explainers $EXPLAINERS \
-            --max_samples 1000
+            --max_samples 2
             
         echo "<<< Job Finished. Moving to next configuration..."
         sleep 5 # Give the OS a few seconds to fully flush the GPU VRAM
